@@ -1,30 +1,24 @@
 const fs = require("fs");
 const path = require("path");
+const Const = require("./const/index");
 const { exec, spawn } = require("child_process");
 const dayjs = require("dayjs");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
 
 dayjs.extend(customParseFormat);
 
-// 获取当前脚本的完整路径
-const __filename = fileURLToPath(import.meta.url);
+const Input_Dir = Const.InputVideoDir;
+const Output_Dir = Const.OutputImgDir;
+const Base_Dir = Const.BaseDir;
 
-// 获取当前脚本所在的目录路径
-const __dirname = path.dirname(__filename);
-
-// 配置输入输出目录（与 Bash 脚本保持一致）
-const INPUT_DIR = path.resolve(__dirname, "input");
-const OUTPUT_DIR = path.resolve(__dirname, "output");
-
-const baseDir = path.resolve(__dirname, "output"); // 你的图片根目录
 const listFilePath = path.resolve(
-  __dirname,
+  Base_Dir,
   "/images_list_4_ffmpeg_to_generate_video.txt",
 );
 const flag_每日一张图模式 = false;
 // 输出的视频名
 const outputVideo = path.resolve(
-  __dirname,
+  Base_Dir,
   `${flag_每日一张图模式 ? "每日一张图" : "小朋友成长记"}_output.mp4`,
 );
 
@@ -47,7 +41,7 @@ function getAllImages(dir, fileList = []) {
 }
 
 // 1. 获取并排序
-let rawImageFileList = getAllImages(baseDir);
+let rawImageFileList = getAllImages(Output_Dir);
 // 解析文件名，转换为时间戳
 let imageFileList = [];
 for (const item of rawImageFileList) {

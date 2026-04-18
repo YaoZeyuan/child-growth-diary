@@ -1,19 +1,17 @@
 const fs = require("fs");
 const path = require("path");
+const Const = require("./const/index");
 
-// 获取当前脚本的完整路径
-const __filename = fileURLToPath(import.meta.url);
-
-// 获取当前脚本所在的目录路径
-const __dirname = dirname(__filename);
+const Input_Dir = Const.InputVideoDir;
+const Output_Dir = Const.OutputImgDir;
+const Base_Dir = Const.BaseDir;
 
 // ================= 配置区域 =================
 const targetMonth = "202604"; // 指定月份 (格式: YYYYMM)
-const baseDir = path.resolve(__dirname, "output");
 // ===========================================
 
 const fileInfoMap = {};
-const files = fs.readdirSync(baseDir);
+const files = fs.readdirSync(Output_Dir);
 
 function getFileInfo(uri) {
   if (fileInfoMap[uri]) {
@@ -32,7 +30,7 @@ function getFileInfo(uri) {
  */
 function isDateExist(dateStr) {
   for (const file of files) {
-    const oldPath = path.join(baseDir, file);
+    const oldPath = path.join(Base_Dir, file);
     if (file.includes(".") === false && file.includes("_") === false) {
       // 不是文件，则不需要处理
       continue;
@@ -59,7 +57,7 @@ async function organizeFiles() {
     for (let day = 1; day <= daysInMonth; day++) {
       // 格式化日期为 YYYYMMDD (例如 20251201)
       const dateStr = `${targetMonth}${day.toString().padStart(2, "0")}`;
-      const folderPath = path.join(baseDir, dateStr);
+      const folderPath = path.join(Base_Dir, dateStr);
       if (isDateExist(dateStr) === false) {
         console.log(`❌不存在归属于${dateStr}下的文件，自动跳过`);
         continue;
@@ -75,7 +73,7 @@ async function organizeFiles() {
       let i = 0;
       for (const file of files) {
         i++;
-        const oldPath = path.join(baseDir, file);
+        const oldPath = path.join(Base_Dir, file);
         const newPath = path.join(folderPath, file);
 
         // console.log(`检查第${i}/${files.length}个文件${oldPath}`);

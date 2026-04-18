@@ -2,16 +2,7 @@ import { fileURLToPath } from "url";
 const { spawn } = require("child_process");
 const fs = require("fs").promises;
 const path = require("path");
-
-// 获取当前脚本的完整路径
-const __filename = fileURLToPath(import.meta.url);
-
-// 获取当前脚本所在的目录路径
-const __dirname = path.dirname(__filename);
-
-// 配置输入输出目录（与 Bash 脚本保持一致）
-const INPUT_DIR = path.resolve(__dirname, "input");
-const OUTPUT_DIR = path.resolve(__dirname, "output");
+const Const = require("./const/index");
 
 /**
  * 执行命令并获取 stdout 字符串
@@ -142,7 +133,9 @@ async function processFile(filePath, fileName) {
     duration = await getVideoDuration(filePath);
     console.log(`总时长: ${duration} 秒`);
   } catch (err) {
-    console.error(`获取视频时长失败: ${err.message}`);
+    console.error(
+      `获取视频时长失败: ${err.message}, 跳过对文件${filePath}的读取`,
+    );
     return; // 跳过此文件
   }
 
@@ -157,7 +150,7 @@ async function processFile(filePath, fileName) {
   for (let i = 0; i < duration; i += 60) {
     const formattedCount = String(count).padStart(4, "0");
     const outputImage = path.join(
-      OUTPUT_DIR,
+      Const.OutputImgDir,
       `${baseName}_${formattedCount}.jpg`,
     );
     const seekSecond = i;
@@ -179,7 +172,9 @@ async function processFile(filePath, fileName) {
   console.log(`开始处理 ${tasks.length} 个截图任务，并发数 10...`);
   try {
     await runWithConcurrency(tasks, 10);
-    console.log(`完成！共提取了 ${tasks.length} 张图片到 ${OUTPUT_DIR} 目录。`);
+    console.log(
+      `完成！共提取了 ${tasks.length} 张图片到 ${Const.OutputImgDir} 目录。`,
+    );
   } catch (err) {
     console.error(`处理过程中发生错误: ${err.message}`);
   }
@@ -191,21 +186,21 @@ async function processFile(filePath, fileName) {
 async function main() {
   try {
     // 确保输出目录存在
-    await fs.mkdir(OUTPUT_DIR, { recursive: true });
-    console.log(`输出目录已准备: ${OUTPUT_DIR}`);
+    await fs.mkdir(Const.OutputImgDir, { recursive: true });
+    console.log(`✅输出目录准备完毕: ${Const.OutputImgDir}`);
 
     // 读取输入目录下所有 .mp4 文件
-    const files = await fs.readdir(INPUT_DIR);
+    const files = await fs.readdir(Const.InputVideoDir);
     const mp4Files = files.filter((f) => f.toLowerCase().endsWith(".mp4"));
 
     if (mp4Files.length === 0) {
-      console.log(`在 ${INPUT_DIR} 中未找到任何 .mp4 文件`);
+      console.log(`在 ${Const.InputVideoDir} 中未找到任何 .mp4 文件`);
       return;
     }
 
     // 顺序处理每个文件（文件之间不并发，与 Bash 脚本行为一致）
     for (const file of mp4Files) {
-      const fullPath = path.join(INPUT_DIR, file);
+      const fullPath = path.join(Const.InputVideoDir, file);
       await processFile(fullPath, file);
     }
 
