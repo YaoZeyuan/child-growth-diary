@@ -1,0 +1,6 @@
+*.mp4
+*.jpg
+node_modules
+
+# 临时文件
+images_list_4_ffmpeg_to_generate_video.txt
