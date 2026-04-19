@@ -1,6 +1,6 @@
 import { fileURLToPath } from "url";
 const { spawn } = require("child_process");
-const fs = require("fs").promises;
+const fs = require("node:fs/promises");
 const path = require("path");
 const Const = require("./const/index");
 

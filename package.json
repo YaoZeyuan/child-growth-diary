@@ -4,10 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "monitor-video-2-img": "node monitor-video-2-img.js",
-    "organize-img-files": "node organize-img-files.js",
-    "screenshot-2-video": "node screenshot-2-video.js"
+    "m1": "npm run monitor-video-2-img",
+    "monitor-video-2-img": "node ./src/monitor-video-2-img.js",
+    "o2": "npm run organize-img-files",
+    "organize-img-files": "node ./src/organize-img-files.js",
+    "s3": "npm run screenshot-2-video",
+    "screenshot-2-video": "node ./src/screenshot-2-video.js"
   },
   "keywords": [],
   "author": "",
@@ -15,5 +17,8 @@
   "packageManager": "pnpm@10.17.1",
   "dependencies": {
     "dayjs": "^1.11.20"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
