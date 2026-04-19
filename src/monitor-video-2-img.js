@@ -223,7 +223,7 @@ async function main() {
     console.error(`主流程出错: ${err.message}`);
     process.exit(1);
   } finally {
-    const entAt = dayjs().unix();
+    const endAt = dayjs().unix();
     const durationAt = endAt - startAt;
     console.log(
       `执行完毕，总耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
