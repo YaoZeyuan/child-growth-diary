@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "monitor-video-2-img": "node monitor-video-2-img.js",
+    "organize-img-files": "node organize-img-files.js",
+    "screenshot-2-video": "node screenshot-2-video.js"
   },
   "keywords": [],
   "author": "",
