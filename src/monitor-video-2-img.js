@@ -149,7 +149,7 @@ async function processFile(filePath, fileName) {
 
   // 2. 准备截图任务列表（每60秒一帧）
   const tasks = [];
-  let count = 1;
+  let count = 0;
   for (let i = 0; i < duration; i += 60) {
     const formattedCount = String(count).padStart(4, "0");
     const outputImage = path.join(
@@ -157,13 +157,24 @@ async function processFile(filePath, fileName) {
       `${baseName}_${formattedCount}.jpg`,
     );
     const seekSecond = i;
-    tasks.push(() => {
-      console.log(
-        `开始导出: ${fileName} 第 ${seekSecond}/${duration} 秒 -> ${path.basename(outputImage)}`,
-      );
-      return extractFrame(filePath, seekSecond, outputImage);
-    });
-    count++;
+    // 添加断点续传逻辑
+    try {
+      const stats = await fs.stat(outputImage);
+      if (stats.size > 100) {
+        console.log(`${outputImage}文件已存在，跳过生成逻辑`);
+      }
+    } catch (error) {
+      // 文件尚不存在，正常生成
+      tasks.push(() => {
+        console.log(
+          `开始导出: ${fileName} 第 ${seekSecond}/${duration} 秒 -> ${path.basename(outputImage)}`,
+        );
+        return extractFrame(filePath, seekSecond, outputImage);
+      });
+    } finally {
+      // 文件序列必须递增
+      count++;
+    }
   }
 
   if (tasks.length === 0) {
