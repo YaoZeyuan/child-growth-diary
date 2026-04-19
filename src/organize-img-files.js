@@ -4,7 +4,7 @@ import * as Const from "./const/index.js";
 
 const Input_Dir = Const.InputVideoDir;
 const Output_Dir = Const.OutputImgDir;
-const Base_Dir = Const.BaseDir;
+const Base_Dir = Const.OutputImgDir;
 
 // ================= 配置区域 =================
 const targetMonth = "202604"; // 指定月份 (格式: YYYYMM)
