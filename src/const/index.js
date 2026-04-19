@@ -1,5 +1,5 @@
-const fs = require("fs");
-const path = require("path");
+import fs from "fs";
+import path from "path";
 
 // 获取当前脚本的完整路径
 const __filename = fileURLToPath(import.meta.url);

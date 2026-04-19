@@ -1,6 +1,6 @@
-const fs = require("fs");
-const path = require("path");
-const Const = require("./const/index");
+import fs from "fs";
+import path from "path";
+import * as Const from "./const/index";
 
 const Input_Dir = Const.InputVideoDir;
 const Output_Dir = Const.OutputImgDir;

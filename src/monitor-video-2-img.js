@@ -1,8 +1,8 @@
 import { fileURLToPath } from "url";
-const { spawn } = require("child_process");
-const fs = require("node:fs/promises");
-const path = require("path");
-const Const = require("./const/index");
+import { spawn } from "child_process";
+import fs from "node:fs/promises";
+import path from "path";
+import * as Const from "./const/index.js";
 
 /**
  * 执行命令并获取 stdout 字符串
@@ -212,4 +212,5 @@ async function main() {
 }
 
 // 运行主函数
-main();
+console.log(1);
+// main();

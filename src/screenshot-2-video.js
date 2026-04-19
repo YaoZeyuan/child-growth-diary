@@ -1,9 +1,9 @@
-const fs = require("fs");
-const path = require("path");
-const Const = require("./const/index");
-const { exec, spawn } = require("child_process");
-const dayjs = require("dayjs");
-const customParseFormat = require("dayjs/plugin/customParseFormat");
+import fs from "fs";
+import path from "path";
+import * as Const from "./const/index";
+import { exec, spawn } from "child_process";
+import dayjs from "dayjs";
+import customParseFormat from "dayjs/plugin/customParseFormat";
 
 dayjs.extend(customParseFormat);
 
