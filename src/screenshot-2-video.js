@@ -22,16 +22,63 @@ const outputVideo = path.resolve(
   `${flag_每日一张图模式 ? "每日一张图" : "小朋友成长记"}_output.mp4`,
 );
 
-/**
- * 检查 ffmpeg 是否支持 h264_nvenc 编码器
- * @returns {boolean}
- */
-function isNvencAvailable() {
+// ---- 自动选择编码器 ----
+function getAvailableH264Encoder() {
   try {
     const output = execSync("ffmpeg -encoders", { encoding: "utf8" });
-    return /h264_nvenc/.test(output);
+    const has = (enc) => new RegExp(`\\b${enc}\\b`).test(output);
+    if (has("h264_nvenc")) return "h264_nvenc";
+    if (has("h264_amf")) return "h264_amf";
+    if (has("h264_qsv")) return "h264_qsv";
+    return "libx264";
   } catch (err) {
-    return false;
+    return "libx264";
+  }
+}
+
+function getEncoderArgs(encoder, isDailyMode) {
+  const common = [
+    // 指定编码器
+    "-c:v",
+    encoder,
+    // 保证大多数播放器能正常打开
+    "-pix_fmt",
+    "yuv420p",
+    // 固定关键帧, 方便快进
+    "-g",
+    isDailyMode ? "4" : "48",
+    // 将索引移至头部，实现秒开和顺滑拖动
+    "-movflags",
+    "+faststart",
+  ];
+  switch (encoder) {
+    case "h264_nvenc":
+      return [
+        ...common,
+        // 预设值（p1-p7，p4为均衡，p1最快，p7质量最好）
+        "-preset",
+        "p4",
+        // 针对高画质优化
+        "-tune",
+        "hq",
+        // 可变码率控制
+        "-rc",
+        "vbr",
+      ];
+    case "h264_amf":
+      return [...common, "-quality", "quality", "-rc", "cbr", "-filler", "0"];
+    case "h264_qsv":
+      return [
+        ...common,
+        "-preset",
+        "slow",
+        "-global_quality",
+        "23",
+        "-look_ahead",
+        "1",
+      ];
+    default:
+      return [...common, "-preset", "medium", "-crf", "18"];
   }
 }
 
@@ -105,8 +152,10 @@ fs.writeFileSync(listFilePath, fileContent);
 // console.log(`已找到 ${images.length} 张图片，正在生成视频...`);
 
 // 3. 调用 FFmpeg
-const useNvenc = isNvencAvailable();
-let args = [
+const encoder = getAvailableH264Encoder();
+console.log(`🎬 使用编码器: ${encoder}`);
+
+const args = [
   "-y",
   // 自动尝试硬件加速读取（可选）
   "-hwaccel",
@@ -123,59 +172,10 @@ let args = [
   // 输入文件
   "-i",
   listFilePath,
+  ...getEncoderArgs(encoder, flag_每日一张图模式),
+  // 文件输出地址
+  outputVideo,
 ];
-
-if (useNvenc) {
-  console.log("✅ 检测到 NVIDIA GPU，使用 NVENC 硬件加速编码");
-  args.push(
-    // 使用 NVIDIA H.264 硬件编码器
-    "-c:v",
-    "h264_nvenc",
-    // 预设值（p1-p7，p4为均衡，p1最快，p7质量最好）
-    "-preset",
-    "p4",
-    // 针对高画质优化
-    "-tune",
-    "hq",
-    // 可变码率控制
-    "-rc",
-    "vbr",
-    // 保证大多数播放器能正常打开
-    "-pix_fmt",
-    "yuv420p",
-    // 固定关键帧, 方便快进
-    "-g",
-    flag_每日一张图模式 ? "4" : "48",
-    // 将索引移至头部，实现秒开和顺滑拖动
-    "-movflags",
-    "+faststart",
-    // 文件输出地址
-    outputVideo,
-  );
-} else {
-  console.log("⚠️ 未检测到 NVENC 支持，回退到 CPU 软件编码 (libx264)");
-  args.push(
-    // 使用CPU 进行编码，较慢
-    "-c:v",
-    "libx264",
-    // 平衡速度与压缩率，可改为 fast/slow
-    "-preset",
-    "medium",
-    // 高质量（越小质量越好，18 接近无损）
-    "-crf",
-    "18",
-    "-pix_fmt",
-    "yuv420p",
-    // 固定关键帧, 方便快进
-    "-g",
-    flag_每日一张图模式 ? "4" : "48",
-    // 将索引移至头部，实现秒开和顺滑拖动
-    "-movflags",
-    "+faststart",
-    // 文件输出地址
-    outputVideo,
-  );
-}
 
 // 参数说明
 console.log(`启动 ffmpeg 进行合成，指令参数 => `, args.join(" "));
