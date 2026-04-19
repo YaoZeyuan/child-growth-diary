@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import * as Const from "./const/index";
+import * as Const from "./const/index.js";
 
 const Input_Dir = Const.InputVideoDir;
 const Output_Dir = Const.OutputImgDir;
@@ -43,6 +43,9 @@ function isDateExist(dateStr) {
 }
 
 async function organizeFiles() {
+  // 执行前最后确认
+  await Const.asyncConfirmIt(`准备启动对文件夹 ${Base_Dir} 内文件的规整`);
+
   try {
     // 1. 解析年份和月份
     const year = parseInt(targetMonth.substring(0, 4));

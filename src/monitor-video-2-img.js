@@ -192,7 +192,10 @@ async function main() {
     // 读取输入目录下所有 .mp4 文件
     const files = await fs.readdir(Const.InputVideoDir);
     const mp4Files = files.filter((f) => f.toLowerCase().endsWith(".mp4"));
-    await Const.asyncConfirmIt();
+
+    // 执行前最后确认
+    await Const.asyncConfirmIt(`共有${mp4Files.length}条视频待处理`);
+
     if (mp4Files.length === 0) {
       console.log(`在 ${Const.InputVideoDir} 中未找到任何 .mp4 文件`);
       return;
