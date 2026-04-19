@@ -2,6 +2,7 @@ import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import fs from "node:fs/promises";
 import path from "path";
+import dayjs from "dayjs";
 import * as Const from "./const/index.js";
 
 /**
@@ -186,6 +187,7 @@ async function processFile(filePath, fileName) {
  * 主函数
  */
 async function main() {
+  const startAt = dayjs().unix();
   try {
     // 确保输出目录存在
     await fs.mkdir(Const.OutputImgDir, { recursive: true });
@@ -204,18 +206,30 @@ async function main() {
     }
 
     // 顺序处理每个文件（文件之间不并发，与 Bash 脚本行为一致）
+    let fileCounter = 0;
     for (const file of mp4Files) {
+      fileCounter++;
       const fullPath = path.join(Const.InputVideoDir, file);
       await processFile(fullPath, file);
+      const currentAt = dayjs().unix();
+      const durationAt = currentAt - startAt;
+      console.log(
+        `✅第${fileCounter}/${mp4Files.length}个文件处理完毕，当前耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
+      );
     }
 
     console.log("所有任务已全部完成！");
   } catch (err) {
     console.error(`主流程出错: ${err.message}`);
     process.exit(1);
+  } finally {
+    const entAt = dayjs().unix();
+    const durationAt = endAt - startAt;
+    console.log(
+      `执行完毕，总耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
+    );
   }
 }
 
 // 运行主函数
-// console.log(1);
 main();
