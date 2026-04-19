@@ -88,7 +88,7 @@ function extractFrame(inputPath, seekSecond, outputPath) {
     });
     proc.on("error", reject);
   }).catch((e) => {
-    console.log(`${outputPath}文件输出失败，自动跳过`);
+    console.log(`❌${outputPath}文件输出失败，自动跳过`);
   });
 }
 
