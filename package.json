@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "m1": "npm run monitor-video-2-img",
     "monitor-video-2-img": "node ./src/monitor-video-2-img.js",

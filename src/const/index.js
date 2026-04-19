@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
 // 获取当前脚本的完整路径
 const __filename = fileURLToPath(import.meta.url);
