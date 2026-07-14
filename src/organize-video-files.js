@@ -5,7 +5,7 @@ import * as Const from "./const/index.js";
 const Base_Dir = Const.BackupVideoDir;
 
 // ================= 配置区域 =================
-const targetMonth = "202604"; // 指定月份 (格式: YYYYMM)
+const targetMonth = "202606"; // 指定月份 (格式: YYYYMM)
 // ===========================================
 
 const fileInfoMap = {};

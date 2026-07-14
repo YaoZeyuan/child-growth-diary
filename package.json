@@ -10,7 +10,9 @@
     "o2": "pnpm run organize-img-files",
     "organize-img-files": "node ./src/organize-img-files.js",
     "s3": "pnpm run screenshot-2-video",
-    "screenshot-2-video": "node ./src/screenshot-2-video.js"
+    "screenshot-2-video": "node ./src/screenshot-2-video.js",
+    "o4": "pnpm run organize-video-files",
+    "organize-video-files": "node ./src/organize-video-files.js"
   },
   "keywords": [],
   "author": "",
