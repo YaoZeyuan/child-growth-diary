@@ -7,7 +7,7 @@ const Output_Dir = Const.OutputImgDir;
 const Base_Dir = Const.OutputImgDir;
 
 // ================= 配置区域 =================
-const targetMonth = "202604"; // 指定月份 (格式: YYYYMM)
+const targetMonth = "202606"; // 指定月份 (格式: YYYYMM)
 // ===========================================
 
 const fileInfoMap = {};
@@ -44,7 +44,9 @@ function isDateExist(dateStr) {
 
 async function organizeFiles() {
   // 执行前最后确认
-  await Const.asyncConfirmIt(`准备启动对文件夹 ${Base_Dir} 内文件的规整`);
+  await Const.asyncConfirmIt(
+    `准备启动对文件夹 ${Base_Dir} 内, 属于${targetMonth}月文件的规整`,
+  );
 
   try {
     // 1. 解析年份和月份

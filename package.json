@@ -5,11 +5,11 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "m1": "npm run monitor-video-2-img",
+    "m1": "pnpm run monitor-video-2-img",
     "monitor-video-2-img": "node ./src/monitor-video-2-img.js",
-    "o2": "npm run organize-img-files",
+    "o2": "pnpm run organize-img-files",
     "organize-img-files": "node ./src/organize-img-files.js",
-    "s3": "npm run screenshot-2-video",
+    "s3": "pnpm run screenshot-2-video",
     "screenshot-2-video": "node ./src/screenshot-2-video.js"
   },
   "keywords": [],
