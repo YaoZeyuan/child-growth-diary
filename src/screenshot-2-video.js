@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import * as Const from "./const/index.js";
-import { exec, spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat.js";
 
@@ -10,6 +10,7 @@ dayjs.extend(customParseFormat);
 const Input_Dir = Const.InputVideoDir;
 const Output_Dir = Const.OutputImgDir;
 const Base_Dir = Const.BaseDir;
+const ffmpegPath = path.resolve(Base_Dir, "src", "ffmpeg", "bin", "ffmpeg.exe");
 
 const listFilePath = path.resolve(
   Base_Dir,
@@ -26,7 +27,9 @@ async function main() {
   // ---- 自动选择编码器 ----
   function getAvailableH264Encoder() {
     try {
-      const output = execSync("ffmpeg -encoders", { encoding: "utf8" });
+      const output = execFileSync(ffmpegPath, ["-hide_banner", "-encoders"], {
+        encoding: "utf8",
+      });
       const has = (enc) => new RegExp(`\\b${enc}\\b`).test(output);
       if (has("h264_nvenc")) return "h264_nvenc";
       if (has("h264_amf")) return "h264_amf";
@@ -186,7 +189,7 @@ async function main() {
   console.log(`启动 ffmpeg 进行合成，指令参数 => `, args.join(" "));
 
   // 使用 spawn 启动进程
-  const ffmpeg = spawn("ffmpeg", args);
+  const ffmpeg = spawn(ffmpegPath, args);
 
   // FFmpeg 的进度信息通常输出在 stderr (标准错误流)
   ffmpeg.stderr.on("data", (data) => {
