@@ -7,10 +7,11 @@
 # 操作步骤
 
 1.  克隆该项目，执行`pnpm install`安装依赖
-2.  获取一系列文件名格式为`YYYYMMDDHHmmss_YYYYMMDDHHmmss.mp4`的监控视频文件，存放于`input`文件夹中
-3.  执行`pnpm monitor-video-2-img`, 从input内的视频文件中，每60s截取一张图，输出到`output`文件夹中。命名格式为`${原视频名}_${第n个生成文件}.jpg`
-4.  执行`pnpm organize-img-files`, 将`output`中截取出的图片文件，按文件前缀所在日期，规整到文件夹中
-5.  执行`pnpm screenshot-2-video`, 将`output`中的图片，按文件名顺序合并为视频
+2.  **假定运行环境为windows**，将ffmpeg添加到运行环境中，`$env:Path += ";.\\src\\ffmpeg\\bin"`
+3.  获取一系列文件名格式为`YYYYMMDDHHmmss_YYYYMMDDHHmmss.mp4`的监控视频文件，存放于`input`文件夹中
+4.  执行`pnpm monitor-video-2-img`, 从input内的视频文件中，每60s截取一张图，输出到`output`文件夹中。命名格式为`${原视频名}_${第n个生成文件}.jpg`
+5.  执行`pnpm organize-img-files`, 将`output`中截取出的图片文件，按文件前缀所在日期，规整到文件夹中
+6.  执行`pnpm screenshot-2-video`, 将`output`中的图片，按文件名顺序合并为视频
 
 
 # 其他说明
