@@ -3,7 +3,7 @@ import path from "path";
 import * as Const from "./const/index.js";
 import { exec, spawn } from "child_process";
 import dayjs from "dayjs";
-import customParseFormat from "dayjs/plugin/customParseFormat";
+import customParseFormat from "dayjs/plugin/customParseFormat.js";
 
 dayjs.extend(customParseFormat);
 
@@ -214,3 +214,5 @@ async function main() {
     console.error("无法启动 FFmpeg 子进程:", err);
   });
 }
+
+main();
