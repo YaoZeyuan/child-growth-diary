@@ -5,6 +5,10 @@ import path from "path";
 import dayjs from "dayjs";
 import * as Const from "./const/index.js";
 
+const ffmpegBinDir = path.resolve(Const.BaseDir, "src", "ffmpeg", "bin");
+const ffmpegPath = path.resolve(ffmpegBinDir, "ffmpeg.exe");
+const ffprobePath = path.resolve(ffmpegBinDir, "ffprobe.exe");
+
 /**
  * 执行命令并获取 stdout 字符串
  * @param {string} cmd 命令名
@@ -49,7 +53,7 @@ async function getVideoDuration(videoPath) {
     "default=noprint_wrappers=1:nokey=1",
     videoPath,
   ];
-  const durationStr = await execCommand("ffprobe", args);
+  const durationStr = await execCommand(ffprobePath, args);
   const duration = Math.floor(parseFloat(durationStr));
   if (isNaN(duration)) {
     throw new Error(`无法解析视频时长: ${durationStr}`);
@@ -68,18 +72,29 @@ function extractFrame(inputPath, seekSecond, outputPath) {
   return new Promise((resolve, reject) => {
     const args = [
       "-y", // 覆盖输出文件
+      // 使用 NVIDIA NVDEC/CUDA 解码，并让解码帧保留在显存中
+      "-hwaccel",
+      "cuda",
+      "-hwaccel_output_format",
+      "cuda",
       "-ss",
       seekSecond.toString(),
       "-i",
       inputPath,
       "-frames:v",
       "1",
+      // JPEG 编码器在 CPU 上运行，因此只在编码前把目标帧传回内存
+      "-vf",
+      "hwdownload,format=nv12",
       "-q:v",
       "2",
+      // 明确表示只更新一个文件，避免 image2 的序列文件名警告
+      "-update",
+      "1",
       outputPath,
     ];
     // 使用 spawn，stdio 设为 'inherit' 实现实时日志输出
-    const proc = spawn("ffmpeg", args, { stdio: "inherit" });
+    const proc = spawn(ffmpegPath, args, { stdio: "inherit" });
     proc.on("close", (code) => {
       if (code === 0) {
         resolve();
@@ -89,7 +104,7 @@ function extractFrame(inputPath, seekSecond, outputPath) {
     });
     proc.on("error", reject);
   }).catch((e) => {
-    console.log(`❌${outputPath}文件输出失败，自动跳过`);
+    console.log(`❌${outputPath}文件输出失败，自动跳过：${e.message}`);
   });
 }
 
