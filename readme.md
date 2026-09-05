@@ -12,6 +12,7 @@
 4.  执行`pnpm monitor-video-2-img`, 从input内的视频文件中，每60s截取一张图，输出到`output`文件夹中。命名格式为`${原视频名}_${第n个生成文件}.jpg`
 5.  执行`pnpm organize-img-files`, 将`output`中截取出的图片文件，按文件前缀所在日期，规整到文件夹中
 6.  执行`pnpm screenshot-2-video`, 将`output`中的图片，按文件名顺序合并为视频
+7.  [可选]执行`pnpm organize-video-files`, 将`backup`中的视频，按文件前缀所在日期，规整到文件夹中
 
 
 # 其他说明

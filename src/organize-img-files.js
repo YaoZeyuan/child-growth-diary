@@ -7,7 +7,7 @@ const Output_Dir = Const.OutputImgDir;
 const Base_Dir = Const.OutputImgDir;
 
 // ================= 配置区域 =================
-const targetMonth = "202606"; // 指定月份 (格式: YYYYMM)
+const targetMonth = "202607"; // 指定月份 (格式: YYYYMM)
 // ===========================================
 
 const fileInfoMap = {};
