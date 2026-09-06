@@ -6,7 +6,7 @@ import { logger } from "./util/logger.js";
 const Base_Dir = Const.BackupVideoDir;
 
 // ================= 配置区域 =================
-const targetMonth = "202607"; // 指定月份 (格式: YYYYMM)
+const targetMonth = "202609"; // 指定月份 (格式: YYYYMM)
 // ===========================================
 
 const fileInfoMap = {};
