@@ -4,6 +4,7 @@ import * as Const from "./const/index.js";
 import { execFileSync, spawn } from "child_process";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat.js";
+import { logger } from "./util/logger.js";
 
 dayjs.extend(customParseFormat);
 
@@ -157,11 +158,11 @@ async function main() {
   );
   fs.writeFileSync(listFilePath, fileContent);
 
-  // console.log(`已找到 ${images.length} 张图片，正在生成视频...`);
+  // logger.log(`已找到 ${images.length} 张图片，正在生成视频...`);
 
   // 3. 调用 FFmpeg
   const encoder = getAvailableH264Encoder();
-  console.log(`🎬 使用编码器: ${encoder}`);
+  logger.log(`🎬 使用编码器: ${encoder}`);
 
   const args = [
     "-y",
@@ -186,7 +187,7 @@ async function main() {
   ];
 
   // 参数说明
-  console.log(`启动 ffmpeg 进行合成，指令参数 => `, args.join(" "));
+  logger.log(`启动 ffmpeg 进行合成，指令参数 => `, args.join(" "));
 
   // 使用 spawn 启动进程
   const ffmpeg = spawn(ffmpegPath, args);
@@ -205,16 +206,16 @@ async function main() {
   // 监听进程结束
   ffmpeg.on("close", (code) => {
     if (code === 0) {
-      console.log(`\n✅ 合成成功！视频文件: ${outputVideo}`);
+      logger.log(`\n✅ 合成成功！视频文件: ${outputVideo}`);
       // fs.unlinkSync(listFilePath);
     } else {
-      console.error(`\n❌ FFmpeg 进程退出，退出码: ${code}`);
+      logger.error(`\n❌ FFmpeg 进程退出，退出码: ${code}`);
     }
   });
 
   // 监听错误（如找不到 ffmpeg 命令）
   ffmpeg.on("error", (err) => {
-    console.error("无法启动 FFmpeg 子进程:", err);
+    logger.error("无法启动 FFmpeg 子进程:", err);
   });
 }
 

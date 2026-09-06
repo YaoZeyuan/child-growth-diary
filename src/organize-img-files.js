@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import * as Const from "./const/index.js";
+import { logger } from "./util/logger.js";
 
 const Input_Dir = Const.InputVideoDir;
 const Output_Dir = Const.OutputImgDir;
@@ -56,7 +57,7 @@ async function organizeFiles() {
     // 2. 获取该月的天数 (利用 Date 对象的溢出特性)
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    console.log(`正在处理 ${targetMonth}，共计 ${daysInMonth} 天...`);
+    logger.log(`正在处理 ${targetMonth}，共计 ${daysInMonth} 天...`);
 
     // 3. 循环创建日期文件夹并移动文件
     for (let day = 1; day <= daysInMonth; day++) {
@@ -64,7 +65,7 @@ async function organizeFiles() {
       const dateStr = `${targetMonth}${day.toString().padStart(2, "0")}`;
       const folderPath = path.join(Base_Dir, dateStr);
       if (isDateExist(dateStr) === false) {
-        console.log(`❌不存在归属于${dateStr}下的文件，自动跳过`);
+        logger.log(`❌不存在归属于${dateStr}下的文件，自动跳过`);
         continue;
       }
 
@@ -72,7 +73,7 @@ async function organizeFiles() {
       if (!fs.existsSync(folderPath)) {
         fs.mkdirSync(folderPath, { recursive: true });
       }
-      console.log(`文件夹 ${folderPath} 创建完毕`);
+      logger.log(`文件夹 ${folderPath} 创建完毕`);
 
       // 4. 读取根目录下的所有文件
       let i = 0;
@@ -81,9 +82,9 @@ async function organizeFiles() {
         const oldPath = path.join(Base_Dir, file);
         const newPath = path.join(folderPath, file);
 
-        // console.log(`检查第${i}/${files.length}个文件${oldPath}`);
+        // logger.log(`检查第${i}/${files.length}个文件${oldPath}`);
         if (file.startsWith(dateStr) === false) {
-          //   console.log(`🕛无需移动，自动跳过`);
+          //   logger.log(`🕛无需移动，自动跳过`);
           continue;
         }
 
@@ -91,20 +92,20 @@ async function organizeFiles() {
         if (getFileInfo(oldPath).isFile()) {
           try {
             fs.renameSync(oldPath, newPath);
-            // console.log(`✅已移动: ${file} -> ${dateStr}/`);
+            // logger.log(`✅已移动: ${file} -> ${dateStr}/`);
           } catch (moveErr) {
-            console.error(`❌移动文件 ${file} 失败:`, moveErr);
+            logger.error(`❌移动文件 ${file} 失败:`, moveErr);
           }
         } else {
-          // console.log(`🕛无需移动，自动跳过`);
+          // logger.log(`🕛无需移动，自动跳过`);
         }
       }
-      console.log(`✅文件夹 ${folderPath} 整理完毕`);
+      logger.log(`✅文件夹 ${folderPath} 整理完毕`);
     }
 
-    console.log("任务完成！");
+    logger.log("任务完成！");
   } catch (err) {
-    console.error("发生错误:", err);
+    logger.error("发生错误:", err);
   }
 }
 

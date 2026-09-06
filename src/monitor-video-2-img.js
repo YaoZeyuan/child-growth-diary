@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "path";
 import dayjs from "dayjs";
 import * as Const from "./const/index.js";
+import { logger } from "./util/logger.js";
 
 const ffmpegBinDir = path.resolve(Const.BaseDir, "src", "ffmpeg", "bin");
 const ffmpegPath = path.resolve(ffmpegBinDir, "ffmpeg.exe");
@@ -28,10 +29,14 @@ function execCommand(cmd, args) {
       stderr += data.toString();
     });
     proc.on("close", (code) => {
+      const stdoutMessage = stdout.trim();
+      const stderrMessage = stderr;
+      logger.log(stdoutMessage);
       if (code === 0) {
-        resolve(stdout.trim());
+        resolve(stdoutMessage);
       } else {
-        reject(new Error(`命令执行失败 (code ${code}): ${stderr}`));
+        logger.error(stderrMessage);
+        reject(new Error(`命令执行失败 (code ${code}): ${stderrMessage}`));
       }
     });
     proc.on("error", reject);
@@ -104,7 +109,7 @@ function extractFrame(inputPath, seekSecond, outputPath) {
     });
     proc.on("error", reject);
   }).catch((e) => {
-    console.log(`❌${outputPath}文件输出失败，自动跳过：${e.message}`);
+    logger.log(`❌${outputPath}文件输出失败，自动跳过：${e.message}`);
   });
 }
 
@@ -142,23 +147,23 @@ async function runWithConcurrency(tasks, concurrency) {
  */
 async function processFile(filePath, fileName) {
   const baseName = path.basename(fileName, ".mp4");
-  console.log("--------------------------------------------");
-  console.log(`正在处理: ${filePath}`);
+  logger.log("--------------------------------------------");
+  logger.log(`正在处理: ${filePath}`);
 
   // 1. 获取视频总时长
   let duration;
   try {
     duration = await getVideoDuration(filePath);
-    console.log(`总时长: ${duration} 秒`);
+    logger.log(`总时长: ${duration} 秒`);
   } catch (err) {
-    console.error(
+    logger.error(
       `获取视频时长失败: ${err.message}, 跳过对文件${filePath}的读取`,
     );
     return; // 跳过此文件
   }
 
   if (duration <= 0) {
-    console.warn(`视频时长为 ${duration}，跳过处理`);
+    logger.warn(`视频时长为 ${duration}，跳过处理`);
     return;
   }
 
@@ -176,12 +181,12 @@ async function processFile(filePath, fileName) {
     try {
       const stats = await fs.stat(outputImage);
       if (stats.size > 100) {
-        console.log(`${outputImage}文件已存在，跳过生成逻辑`);
+        logger.log(`${outputImage}文件已存在，跳过生成逻辑`);
       }
     } catch (error) {
       // 文件尚不存在，正常生成
       tasks.push(() => {
-        console.log(
+        logger.log(
           `开始导出: ${fileName} 第 ${seekSecond}/${duration} 秒 -> ${path.basename(outputImage)}`,
         );
         return extractFrame(filePath, seekSecond, outputImage);
@@ -193,19 +198,19 @@ async function processFile(filePath, fileName) {
   }
 
   if (tasks.length === 0) {
-    console.log(`未生成任何截图任务`);
+    logger.log(`未生成任何截图任务`);
     return;
   }
 
   // 3. 并发执行任务（每批最多10个）
-  console.log(`开始处理 ${tasks.length} 个截图任务，并发数 10...`);
+  logger.log(`开始处理 ${tasks.length} 个截图任务，并发数 10...`);
   try {
     await runWithConcurrency(tasks, 10);
-    console.log(
+    logger.log(
       `完成！共提取了 ${tasks.length} 张图片到 ${Const.OutputImgDir} 目录。`,
     );
   } catch (err) {
-    console.error(`处理过程中发生错误: ${err.message}`);
+    logger.error(`处理过程中发生错误: ${err.message}`);
   }
 }
 
@@ -217,7 +222,7 @@ async function main() {
   try {
     // 确保输出目录存在
     await fs.mkdir(Const.OutputImgDir, { recursive: true });
-    console.log(`✅输出目录准备完毕: ${Const.OutputImgDir}`);
+    logger.log(`✅输出目录准备完毕: ${Const.OutputImgDir}`);
 
     // 读取输入目录下所有 .mp4 文件
     const files = await fs.readdir(Const.InputVideoDir);
@@ -227,7 +232,7 @@ async function main() {
     await Const.asyncConfirmIt(`共有${mp4Files.length}条视频待处理`);
 
     if (mp4Files.length === 0) {
-      console.log(`在 ${Const.InputVideoDir} 中未找到任何 .mp4 文件`);
+      logger.log(`在 ${Const.InputVideoDir} 中未找到任何 .mp4 文件`);
       return;
     }
 
@@ -239,19 +244,19 @@ async function main() {
       await processFile(fullPath, file);
       const currentAt = dayjs().unix();
       const durationAt = currentAt - startAt;
-      console.log(
+      logger.log(
         `✅第${fileCounter}/${mp4Files.length}个文件处理完毕，当前耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
       );
     }
 
-    console.log("所有任务已全部完成！");
+    logger.log("所有任务已全部完成！");
   } catch (err) {
-    console.error(`主流程出错: ${err.message}`);
+    logger.error(`主流程出错: ${err.message}`);
     process.exit(1);
   } finally {
     const endAt = dayjs().unix();
     const durationAt = endAt - startAt;
-    console.log(
+    logger.log(
       `执行完毕，总耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
     );
   }
