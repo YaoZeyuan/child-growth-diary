@@ -21,13 +21,13 @@ export const TargetMonth = "202609"; // 整理月份，格式为 YYYYMM
 
 1.  克隆该项目，执行`pnpm install`安装依赖
 2.  **假定运行环境为 Windows，Node.js 版本不低于 20**，确保 `src/ffmpeg/bin` 中有 `ffmpeg.exe` 和 `ffprobe.exe`，脚本直接调用这两个文件
-3.  获取一系列文件名格式为`YYYYMMDDHHmmss_YYYYMMDDHHmmss.mp4`的监控视频文件，存放于`input`文件夹中，并按上面的说明设置公共配置
-4.  执行`pnpm monitor-video-2-img`，从 `input` 内的视频第 0 秒开始，每隔 `ScreenshotIntervalSeconds` 秒截取一张图，输出到 `output` 文件夹中。命名格式为`${原视频名（不含.mp4）}_${从0000开始的序号}.jpg`
+3.  获取一系列文件名格式为`YYYYMMDDHHmmss_YYYYMMDDHHmmss.mp4`的监控视频文件，存放于 `input` 文件夹或其任意层级子目录中，并按上面的说明设置公共配置
+4.  执行`pnpm monitor-video-2-img`，递归读取 `input` 及所有层级子目录中的 `.mp4` 视频（扩展名大小写不限），按完整文件路径（URI）排序后逐个处理。从每个视频第 0 秒开始，每隔 `ScreenshotIntervalSeconds` 秒截取一张图，仍统一输出到 `output` 根目录中。命名格式为`${原视频名（不含.mp4）}_${从0000开始的序号}.jpg`
 5.  执行`pnpm organize-img-files`，将 `output` 中属于 `TargetMonth` 的图片，按文件前缀所在日期规整到文件夹中
-6.  执行`pnpm screenshot-2-video`，读取 `output` 及其子目录中的图片，按拍摄时间顺序合并为视频；拍摄时间为“原视频起始时间 + 图片序号 × 截图间隔”
+6.  执行`pnpm screenshot-2-video`，读取 `output` 及其子目录中的图片，按完整文件路径（URI）排序后合并为视频；拍摄时间仍按“原视频起始时间 + 图片序号 × 截图间隔”计算，用于每日模式的日期分组
 7.  [可选]执行`pnpm organize-video-files`，将 `backup` 中属于 `TargetMonth` 的视频，按文件前缀所在日期规整到文件夹中
 
-合成模式在 [src/screenshot-2-video.js](./src/screenshot-2-video.js) 中通过 `flag_每日一张图模式` 切换：`false` 使用全部图片，以 24 fps 合成；`true` 选取拍摄时间最早的每日第一张图片，以 2 fps 合成。
+合成模式在 [src/screenshot-2-video.js](./src/screenshot-2-video.js) 中通过 `flag_每日一张图模式` 切换：`false` 使用全部图片，以 24 fps 合成；`true` 按 URI 顺序选取每个拍摄日期遇到的第一张图片，以 2 fps 合成。
 
 
 # 其他说明

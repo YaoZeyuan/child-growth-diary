@@ -128,9 +128,9 @@ async function main() {
     });
   }
 
-  // 按实际拍摄时间排序，目录位置和跨午夜的截图不会影响时间顺序
+  // 目录和文件名已有序，按完整 URI 路径确定合成顺序
   imageFileList.sort((a, b) => {
-    return a.timeAt - b.timeAt || a.fileUri.localeCompare(b.fileUri);
+    return a.fileUri.localeCompare(b.fileUri);
   });
 
   // 只输出每天的第一张照片

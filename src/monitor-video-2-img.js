@@ -11,6 +11,25 @@ const ffmpegPath = path.resolve(ffmpegBinDir, "ffmpeg.exe");
 const ffprobePath = path.resolve(ffmpegBinDir, "ffprobe.exe");
 
 /**
+ * 递归读取输入目录及子目录中的视频，返回完整文件路径。
+ * @param {string} dir
+ * @param {string[]} fileList
+ * @returns {Promise<string[]>}
+ */
+async function getAllVideos(dir, fileList = []) {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const filePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await getAllVideos(filePath, fileList);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".mp4")) {
+      fileList.push(filePath);
+    }
+  }
+  return fileList;
+}
+
+/**
  * 执行命令并获取 stdout 字符串
  * @param {string} cmd 命令名
  * @param {string[]} args 参数数组
@@ -146,7 +165,7 @@ async function runWithConcurrency(tasks, concurrency) {
  * @param {string} fileName 文件名（不含路径）
  */
 async function processFile(filePath, fileName) {
-  const baseName = path.basename(fileName, ".mp4");
+  const baseName = path.basename(fileName, path.extname(fileName));
   logger.log("--------------------------------------------");
   logger.log(`正在处理: ${filePath}`);
 
@@ -225,9 +244,9 @@ async function main() {
     await fs.mkdir(Const.OutputImgDir, { recursive: true });
     logger.log(`✅输出目录准备完毕: ${Const.OutputImgDir}`);
 
-    // 读取输入目录下所有 .mp4 文件
-    const files = await fs.readdir(Const.InputVideoDir);
-    const mp4Files = files.filter((f) => f.toLowerCase().endsWith(".mp4"));
+    // 递归读取所有视频，并按完整 URI 路径确定处理顺序
+    const mp4Files = await getAllVideos(Const.InputVideoDir);
+    mp4Files.sort((a, b) => a.localeCompare(b));
 
     // 执行前最后确认
     await Const.asyncConfirmIt(
@@ -235,16 +254,15 @@ async function main() {
     );
 
     if (mp4Files.length === 0) {
-      logger.log(`在 ${Const.InputVideoDir} 中未找到任何 .mp4 文件`);
+      logger.log(`在 ${Const.InputVideoDir} 及其子目录中未找到任何 .mp4 文件`);
       return;
     }
 
     // 顺序处理每个文件（文件之间不并发，与 Bash 脚本行为一致）
     let fileCounter = 0;
-    for (const file of mp4Files) {
+    for (const fullPath of mp4Files) {
       fileCounter++;
-      const fullPath = path.join(Const.InputVideoDir, file);
-      await processFile(fullPath, file);
+      await processFile(fullPath, path.basename(fullPath));
       const currentAt = dayjs().unix();
       const durationAt = currentAt - startAt;
       logger.log(
