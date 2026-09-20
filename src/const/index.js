@@ -15,9 +15,9 @@ export const BackupVideoDir = path.resolve(BaseDir, "backup");
 export const OutputImgDir = path.resolve(BaseDir, "output");
 
 // 截图间隔（秒）：截图和合成必须使用同一配置，修改后需重新生成图片。
-export const ScreenshotIntervalSeconds = 20;
+export const ScreenshotIntervalSeconds = 10;
 // 图片、备份视频整理月份（YYYYMM）。
-export const TargetMonth = "202609";
+export const TargetMonth = "202512";
 
 export function validateScreenshotInterval() {
   if (
