@@ -26,6 +26,7 @@ const outputVideo = path.resolve(
 
 async function main() {
   Const.validateScreenshotInterval();
+  const intervalTag = `_step_by_${Const.ScreenshotIntervalSeconds}s`;
 
   // ---- 自动选择编码器 ----
   function getAvailableH264Encoder() {
@@ -89,7 +90,7 @@ async function main() {
     }
   }
 
-  // 递归获取所有 jpg 图片
+  // 递归查找时只收集当前截图间隔的 jpg，避免混入其他间隔或旧格式图片
   function getAllImages(dir, fileList = []) {
     const files = fs.readdirSync(dir, { withFileTypes: true });
     for (const file of files) {
@@ -97,7 +98,11 @@ async function main() {
       if (file.isDirectory()) {
         // 文件夹，递归向下
         getAllImages(filePath, fileList);
-      } else if (file.isFile() && file.name.toLowerCase().endsWith(".jpg")) {
+      } else if (
+        file.isFile() &&
+        path.extname(file.name).toLowerCase() === ".jpg" &&
+        path.basename(file.name, path.extname(file.name)).endsWith(intervalTag)
+      ) {
         // 普通文件，加入列表
         fileList.push(filePath);
       }
@@ -112,11 +117,26 @@ async function main() {
   for (const item of rawImageFileList) {
     // 获取文件名
     const filename = path.basename(item, path.extname(item));
-    // 文件名解析为时间, 20251219231508_20251219235717_0003.jpg
-    const [startTimeStr, endTimeStr, fileCountStr] = filename.split("_");
-    const startAt = dayjs(startTimeStr, "YYYYMMDDHHmmss").unix();
-    const fileCount = Number.parseInt(fileCountStr);
-    const fileTimeAt = startAt + fileCount * Const.ScreenshotIntervalSeconds;
+    // 例如：20251219231508_20251219235717_0003_step_by_10s.jpg
+    const match = filename.match(/^(\d{14})_(\d{14})_(\d+)_step_by_(\d+)s$/);
+    if (!match) {
+      logger.warn(`图片名不符合带 step_by_Ns 间隔标记的格式，跳过: ${item}`);
+      continue;
+    }
+    const [, startTimeStr, , fileCountStr, intervalStr] = match;
+    const startTime = dayjs(startTimeStr, "YYYYMMDDHHmmss", true);
+    const fileCount = Number(fileCountStr);
+    const intervalSeconds = Number(intervalStr);
+    if (
+      !startTime.isValid() ||
+      !Number.isSafeInteger(fileCount) ||
+      !Number.isSafeInteger(intervalSeconds) ||
+      intervalSeconds <= 0
+    ) {
+      logger.warn(`图片名中的时间、序号或截图间隔无效，跳过: ${item}`);
+      continue;
+    }
+    const fileTimeAt = startTime.unix() + fileCount * intervalSeconds;
     const fileDayStr = dayjs.unix(fileTimeAt).format("YYYY-MM-DD");
     // 录入文件列表中
     imageFileList.push({
@@ -126,6 +146,13 @@ async function main() {
       timeAt: fileTimeAt,
       timeAtStr: dayjs.unix(fileTimeAt).format("YYYY-MM-DD HH:mm:ss"),
     });
+  }
+
+  if (imageFileList.length === 0) {
+    logger.warn(
+      `在 ${Output_Dir} 及其子目录中未找到匹配 ${intervalTag} 的可合成图片`,
+    );
+    return;
   }
 
   // 目录和文件名已有序，按完整 URI 路径确定合成顺序
@@ -157,7 +184,7 @@ async function main() {
     .join("\n");
 
   await Const.asyncConfirmIt(
-    `整理完毕，共需处理${fileContent.split("\n").length}张图片`,
+    `整理完毕，匹配 ${intervalTag}，共需处理${fileContent.split("\n").length}张图片`,
   );
   fs.writeFileSync(listFilePath, fileContent);
 

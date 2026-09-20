@@ -193,7 +193,7 @@ async function processFile(filePath, fileName) {
     const formattedCount = String(count).padStart(4, "0");
     const outputImage = path.join(
       Const.OutputImgDir,
-      `${baseName}_${formattedCount}.jpg`,
+      `${baseName}_${formattedCount}_step_by_${Const.ScreenshotIntervalSeconds}s.jpg`,
     );
     const seekSecond = i;
     // 添加断点续传逻辑

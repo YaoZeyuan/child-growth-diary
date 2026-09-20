@@ -6,7 +6,7 @@
 
 # 公共配置
 
-在 [src/const/index.js](./src/const/index.js) 中统一配置截图间隔和整理月份：
+在 [src/const/index.js](./src/const/index.js) 中统一配置截图间隔和整理月份，例如：
 
 ```js
 export const ScreenshotIntervalSeconds = 20; // 截图间隔，单位为秒，必须是正整数
@@ -15,19 +15,23 @@ export const TargetMonth = "202609"; // 整理月份，格式为 YYYYMM
 
 例如间隔为 `20` 时，61 秒的视频会在第 `0、20、40、60` 秒各生成一张图片。`TargetMonth` 只控制图片和视频整理脚本处理的月份；截图和合成仍处理各自输入目录中的文件。
 
-截图和合成共用 `ScreenshotIntervalSeconds`。修改间隔后，应先移走或清理 `output` 中之前生成的图片（包括日期子目录），重新截图，再使用相同的间隔配置合成，避免混用不同间隔的图片。
+截图文件名会记录间隔，例如 `20260901000000_20260901000101_0000_step_by_20s.jpg`。修改 `ScreenshotIntervalSeconds` 后重新截图，不同间隔的图片可以保存在同一目录中，不会因间隔不同而重名。
+
+合成会递归查找 `output` 及其子目录，只纳入文件名以当前配置对应的完整 `_step_by_${ScreenshotIntervalSeconds}s.jpg` 后缀结尾的图片（扩展名大小写不限）。例如设置为 `10` 时，只匹配 `_step_by_10s.jpg`，不会匹配 `20`、`100` 或 `110` 秒间隔，也不会匹配没有间隔标记的旧图片。无需移动其他间隔的图片；没有匹配图片时会提示并退出。匹配间隔但命名不合法的图片会警告并跳过。
+
+截图缓存按完整的预计输出文件名匹配，其中包含间隔标记：相同间隔下已有的有效图片可以复用并跳过截图，不同间隔的图片不会误命中缓存。
 
 # 操作步骤
 
 1.  克隆该项目，执行`pnpm install`安装依赖
 2.  **假定运行环境为 Windows，Node.js 版本不低于 20**，确保 `src/ffmpeg/bin` 中有 `ffmpeg.exe` 和 `ffprobe.exe`，脚本直接调用这两个文件
 3.  获取一系列文件名格式为`YYYYMMDDHHmmss_YYYYMMDDHHmmss.mp4`的监控视频文件，存放于 `input` 文件夹或其任意层级子目录中，并按上面的说明设置公共配置
-4.  执行`pnpm monitor-video-2-img`，递归读取 `input` 及所有层级子目录中的 `.mp4` 视频（扩展名大小写不限），按完整文件路径（URI）排序后逐个处理。从每个视频第 0 秒开始，每隔 `ScreenshotIntervalSeconds` 秒截取一张图，仍统一输出到 `output` 根目录中。命名格式为`${原视频名（不含.mp4）}_${从0000开始的序号}.jpg`
+4.  执行`pnpm monitor-video-2-img`，递归读取 `input` 及所有层级子目录中的 `.mp4` 视频（扩展名大小写不限），按完整文件路径（URI）排序后逐个处理。从每个视频第 0 秒开始，每隔 `ScreenshotIntervalSeconds` 秒截取一张图，仍统一输出到 `output` 根目录中。命名格式为`${原视频名（不含.mp4）}_${从0000开始的序号}_step_by_${ScreenshotIntervalSeconds}s.jpg`，间隔标记位于序号之后
 5.  执行`pnpm organize-img-files`，将 `output` 中属于 `TargetMonth` 的图片，按文件前缀所在日期规整到文件夹中
-6.  执行`pnpm screenshot-2-video`，读取 `output` 及其子目录中的图片，按完整文件路径（URI）排序后合并为视频；拍摄时间仍按“原视频起始时间 + 图片序号 × 截图间隔”计算，用于每日模式的日期分组
+6.  执行`pnpm screenshot-2-video`，递归读取 `output` 及其子目录中与当前 `ScreenshotIntervalSeconds` 间隔标记匹配的图片，按完整文件路径（URI）排序后合并为视频；拍摄时间按“原视频起始时间 + 图片序号 × 文件名中的秒级间隔”计算，用于每日模式的日期分组
 7.  [可选]执行`pnpm organize-video-files`，将 `backup` 中属于 `TargetMonth` 的视频，按文件前缀所在日期规整到文件夹中
 
-合成模式在 [src/screenshot-2-video.js](./src/screenshot-2-video.js) 中通过 `flag_每日一张图模式` 切换：`false` 使用全部图片，以 24 fps 合成；`true` 按 URI 顺序选取每个拍摄日期遇到的第一张图片，以 2 fps 合成。
+合成模式在 [src/screenshot-2-video.js](./src/screenshot-2-video.js) 中通过 `flag_每日一张图模式` 切换：`false` 使用全部匹配间隔的图片，以 24 fps 合成；`true` 从匹配间隔的图片中按 URI 顺序选取每个拍摄日期遇到的第一张图片，以 2 fps 合成。
 
 
 # 其他说明
@@ -44,8 +48,8 @@ export const TargetMonth = "202609"; // 整理月份，格式为 YYYYMM
 ## 转换计划
 
 1. 每个月从路由器中下载一次监控数据，保存监控数据，并腾出路由器空间
-2. 处理原始监控数据，按 `ScreenshotIntervalSeconds` 指定的秒数间隔，将原视频转换为图片，默认每 20 秒一张
-3. 将产出图片，通过 [screenshot-2-video](./src/screenshot-2-video.js) 合成回视频。可以选择全部图片，或每天的第一张图片两种模式
+2. 处理原始监控数据，按 `ScreenshotIntervalSeconds` 指定的秒数间隔，将原视频转换为图片，例如设置为 `20` 时每 20 秒一张
+3. 将当前配置间隔对应的图片，通过 [screenshot-2-video](./src/screenshot-2-video.js) 合成回视频。可以选择全部匹配图片，或每天的第一张匹配图片两种模式
 
 
 ## samba下载视频方法
