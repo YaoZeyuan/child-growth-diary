@@ -7,9 +7,7 @@ const Input_Dir = Const.InputVideoDir;
 const Output_Dir = Const.OutputImgDir;
 const Base_Dir = Const.OutputImgDir;
 
-// ================= 配置区域 =================
-const targetMonth = "202609"; // 指定月份 (格式: YYYYMM)
-// ===========================================
+const targetMonth = Const.TargetMonth;
 
 const fileInfoMap = {};
 const files = fs.readdirSync(Output_Dir);

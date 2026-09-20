@@ -15,7 +15,7 @@ const ffmpegPath = path.resolve(Base_Dir, "src", "ffmpeg", "bin", "ffmpeg.exe");
 
 const listFilePath = path.resolve(
   Base_Dir,
-  "/images_list_4_ffmpeg_to_generate_video.txt",
+  "images_list_4_ffmpeg_to_generate_video.txt",
 );
 const flag_每日一张图模式 = false;
 // 输出的视频名
@@ -25,6 +25,8 @@ const outputVideo = path.resolve(
 );
 
 async function main() {
+  Const.validateScreenshotInterval();
+
   // ---- 自动选择编码器 ----
   function getAvailableH264Encoder() {
     try {
@@ -89,15 +91,13 @@ async function main() {
 
   // 递归获取所有 jpg 图片
   function getAllImages(dir, fileList = []) {
-    const files = fs.readdirSync(dir);
+    const files = fs.readdirSync(dir, { withFileTypes: true });
     for (const file of files) {
-      const filePath = path.join(dir, file);
-      const isDir =
-        filePath.includes("_") === false && filePath.includes(".") === false;
-      if (isDir) {
+      const filePath = path.join(dir, file.name);
+      if (file.isDirectory()) {
         // 文件夹，递归向下
         getAllImages(filePath, fileList);
-      } else if (file.endsWith(".jpg")) {
+      } else if (file.isFile() && file.name.toLowerCase().endsWith(".jpg")) {
         // 普通文件，加入列表
         fileList.push(filePath);
       }
@@ -111,12 +111,12 @@ async function main() {
   let imageFileList = [];
   for (const item of rawImageFileList) {
     // 获取文件名
-    const filename = item.split("/").pop().split(".")[0];
+    const filename = path.basename(item, path.extname(item));
     // 文件名解析为时间, 20251219231508_20251219235717_0003.jpg
     const [startTimeStr, endTimeStr, fileCountStr] = filename.split("_");
     const startAt = dayjs(startTimeStr, "YYYYMMDDHHmmss").unix();
     const fileCount = Number.parseInt(fileCountStr);
-    const fileTimeAt = startAt + (fileCount - 1) * 60;
+    const fileTimeAt = startAt + fileCount * Const.ScreenshotIntervalSeconds;
     const fileDayStr = dayjs.unix(fileTimeAt).format("YYYY-MM-DD");
     // 录入文件列表中
     imageFileList.push({
@@ -128,9 +128,9 @@ async function main() {
     });
   }
 
-  // 关键：按照文件名进行排序，确保 20251219231508 在 20251219235717 之前
+  // 按实际拍摄时间排序，目录位置和跨午夜的截图不会影响时间顺序
   imageFileList.sort((a, b) => {
-    return a.fileUri.localeCompare(b.fileUri);
+    return a.timeAt - b.timeAt || a.fileUri.localeCompare(b.fileUri);
   });
 
   // 只输出每天的第一张照片
@@ -150,7 +150,10 @@ async function main() {
   const fileContent = (
     flag_每日一张图模式 ? firstImgageFileOfDayList : imageFileList
   )
-    .map((imgFile) => `file '${path.resolve(imgFile.fileUri)}'`)
+    .map((imgFile) => {
+      const imagePath = path.resolve(imgFile.fileUri).replaceAll("\\", "/");
+      return `file '${imagePath.replaceAll("'", "'\\''")}'`;
+    })
     .join("\n");
 
   await Const.asyncConfirmIt(
@@ -219,4 +222,7 @@ async function main() {
   });
 }
 
-main();
+main().catch((err) => {
+  logger.error(`合成失败: ${err.message}`);
+  process.exitCode = 1;
+});

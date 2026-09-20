@@ -44,7 +44,7 @@ function execCommand(cmd, args) {
 }
 
 /**
- * 获取视频总时长（秒，整数）
+ * 获取视频总时长（秒）
  * @param {string} videoPath
  * @returns {Promise<number>}
  */
@@ -59,8 +59,8 @@ async function getVideoDuration(videoPath) {
     videoPath,
   ];
   const durationStr = await execCommand(ffprobePath, args);
-  const duration = Math.floor(parseFloat(durationStr));
-  if (isNaN(duration)) {
+  const duration = parseFloat(durationStr);
+  if (!Number.isFinite(duration)) {
     throw new Error(`无法解析视频时长: ${durationStr}`);
   }
   return duration;
@@ -167,10 +167,10 @@ async function processFile(filePath, fileName) {
     return;
   }
 
-  // 2. 准备截图任务列表（每60秒一帧）
+  // 2. 从第 0 秒开始，按公共配置的秒数间隔准备截图任务
   const tasks = [];
   let count = 0;
-  for (let i = 0; i < duration; i += 60) {
+  for (let i = 0; i < duration; i += Const.ScreenshotIntervalSeconds) {
     const formattedCount = String(count).padStart(4, "0");
     const outputImage = path.join(
       Const.OutputImgDir,
@@ -220,6 +220,7 @@ async function processFile(filePath, fileName) {
 async function main() {
   const startAt = dayjs().unix();
   try {
+    Const.validateScreenshotInterval();
     // 确保输出目录存在
     await fs.mkdir(Const.OutputImgDir, { recursive: true });
     logger.log(`✅输出目录准备完毕: ${Const.OutputImgDir}`);
@@ -229,7 +230,9 @@ async function main() {
     const mp4Files = files.filter((f) => f.toLowerCase().endsWith(".mp4"));
 
     // 执行前最后确认
-    await Const.asyncConfirmIt(`共有${mp4Files.length}条视频待处理`);
+    await Const.asyncConfirmIt(
+      `共有${mp4Files.length}条视频待处理，每 ${Const.ScreenshotIntervalSeconds} 秒截取一张图片`,
+    );
 
     if (mp4Files.length === 0) {
       logger.log(`在 ${Const.InputVideoDir} 中未找到任何 .mp4 文件`);
