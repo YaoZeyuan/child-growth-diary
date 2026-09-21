@@ -12,16 +12,21 @@
     "s3": "pnpm run screenshot-2-video",
     "screenshot-2-video": "node ./src/screenshot-2-video.js",
     "o4": "pnpm run organize-video-files",
-    "organize-video-files": "node ./src/organize-video-files.js"
+    "organize-video-files": "node ./src/organize-video-files.js",
+    "download-person-model": "node ./src/download-person-model.js",
+    "detect-person": "node ./src/detect-person.js",
+    "test:detection": "node --test test/detection-cache.test.js test/person-detector.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.17.1",
   "dependencies": {
-    "dayjs": "^1.11.20"
+    "dayjs": "^1.11.20",
+    "onnxruntime-node": "1.30.0",
+    "sharp": "0.35.4"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   }
 }

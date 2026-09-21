@@ -7,15 +7,9 @@ import * as Const from "./const/index.js";
 import { logger } from "./util/logger.js";
 
 const ffmpegBinDir = path.resolve(Const.BaseDir, "src", "ffmpeg", "bin");
-const ffmpegPath = path.resolve(ffmpegBinDir, "ffmpeg.exe");
-const ffprobePath = path.resolve(ffmpegBinDir, "ffprobe.exe");
+const ffmpegPath = path.join(ffmpegBinDir, "ffmpeg.exe");
+const ffprobePath = path.join(ffmpegBinDir, "ffprobe.exe");
 
-/**
- * 递归读取输入目录及子目录中的视频，返回完整文件路径。
- * @param {string} dir
- * @param {string[]} fileList
- * @returns {Promise<string[]>}
- */
 async function getAllVideos(dir, fileList = []) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
@@ -29,263 +23,207 @@ async function getAllVideos(dir, fileList = []) {
   return fileList;
 }
 
-/**
- * 执行命令并获取 stdout 字符串
- * @param {string} cmd 命令名
- * @param {string[]} args 参数数组
- * @returns {Promise<string>}
- */
-function execCommand(cmd, args) {
+// 中断时等待子进程真正退出，再清理其临时文件；只保留有限的错误日志。
+function execCommand(cmd, args, signal) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args);
+    const proc = spawn(cmd, args, {
+      signal,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
-
-    proc.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
+    let spawnError;
+    proc.stdout.on("data", (data) => { stdout += data.toString(); });
     proc.stderr.on("data", (data) => {
-      stderr += data.toString();
+      stderr = (stderr + data.toString()).slice(-16384);
     });
+    proc.on("error", (error) => { spawnError = error; });
     proc.on("close", (code) => {
-      const stdoutMessage = stdout.trim();
-      const stderrMessage = stderr;
-      logger.log(stdoutMessage);
-      if (code === 0) {
-        resolve(stdoutMessage);
-      } else {
-        logger.error(stderrMessage);
-        reject(new Error(`命令执行失败 (code ${code}): ${stderrMessage}`));
-      }
+      if (spawnError) reject(spawnError);
+      else if (code !== 0) reject(new Error(`命令执行失败 (code ${code}): ${stderr.trim()}`));
+      else resolve(stdout.trim());
     });
-    proc.on("error", reject);
   });
 }
 
-/**
- * 获取视频总时长（秒）
- * @param {string} videoPath
- * @returns {Promise<number>}
- */
-async function getVideoDuration(videoPath) {
-  const args = [
-    "-v",
-    "error",
-    "-show_entries",
-    "format=duration",
-    "-of",
-    "default=noprint_wrappers=1:nokey=1",
-    videoPath,
-  ];
-  const durationStr = await execCommand(ffprobePath, args);
-  const duration = parseFloat(durationStr);
-  if (!Number.isFinite(duration)) {
-    throw new Error(`无法解析视频时长: ${durationStr}`);
+async function getVideoDuration(videoPath, signal) {
+  const output = await execCommand(ffprobePath, [
+    "-v", "error", "-select_streams", "v:0",
+    "-show_entries", "stream=duration:format=duration", "-of", "json", videoPath,
+  ], signal);
+  const info = JSON.parse(output);
+  if (!info.streams?.length) throw new Error("未找到视频流");
+  // 优先使用视频流时长，避免音轨比画面更长时误判截图缺失。
+  const streamDuration = Number(info.streams[0].duration);
+  const duration = Number.isFinite(streamDuration) && streamDuration > 0
+    ? streamDuration : Number(info.format?.duration);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error(`无法解析有效的视频时长: ${output}`);
   }
   return duration;
 }
 
-/**
- * 提取一帧图片
- * @param {string} inputPath 输入视频路径
- * @param {number} seekSecond 时间点（秒）
- * @param {string} outputPath 输出图片路径
- * @returns {Promise<void>}
- */
-function extractFrame(inputPath, seekSecond, outputPath) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-y", // 覆盖输出文件
-      // 使用 NVIDIA NVDEC/CUDA 解码，并让解码帧保留在显存中
-      "-hwaccel",
-      "cuda",
-      "-hwaccel_output_format",
-      "cuda",
-      "-ss",
-      seekSecond.toString(),
-      "-i",
-      inputPath,
-      "-frames:v",
-      "1",
-      // JPEG 编码器在 CPU 上运行，因此只在编码前把目标帧传回内存
-      "-vf",
-      "hwdownload,format=nv12",
-      "-q:v",
-      "2",
-      // 明确表示只更新一个文件，避免 image2 的序列文件名警告
-      "-update",
-      "1",
-      outputPath,
-    ];
-    // 使用 spawn，stdio 设为 'inherit' 实现实时日志输出
-    const proc = spawn(ffmpegPath, args, { stdio: "inherit" });
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`ffmpeg 进程退出码: ${code}`));
+export function getScreenshotPlan(filePath, duration, interval, outputDir) {
+  const baseName = path.basename(filePath, path.extname(filePath));
+  return Array.from({ length: Math.ceil(duration / interval) }, (_, index) => ({
+    index,
+    outputPath: path.join(outputDir, `${baseName}_${String(index).padStart(4, "0")}_step_by_${interval}s.jpg`),
+    tempName: `${String(index).padStart(8, "0")}.jpg`,
+  }));
+}
+
+async function isValidImage(filePath) {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile() && stat.size > 100;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+export function buildExtractionArgs(filePath, tempDir, interval, frameCount) {
+  return [
+    "-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-y",
+    "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-threads:v", "1",
+    "-i", filePath, "-map", "0:v:0", "-an", "-sn", "-dn",
+    "-filter_threads", "1",
+    // 按相对 0、N、2N 秒取帧，选择该时刻或紧邻之前的帧，保留不足一个间隔的末段。
+    // 先筛选 GPU 帧，再回传少量 JPEG 源帧；避免将视频的每一帧都下载到 CPU。
+    "-vf", `setpts=PTS-STARTPTS,fps=fps=1/${interval}:start_time=0:round=up:eof_action=pass,hwdownload,format=nv12`,
+    "-fps_mode", "passthrough", "-frames:v", String(frameCount),
+    "-c:v", "mjpeg", "-q:v", "2", "-threads:v", "1",
+    "-start_number", "0", "-f", "image2", path.join(tempDir, "%08d.jpg"),
+  ];
+}
+
+// 全部命中不启动 FFmpeg；部分命中时一次解码，在临时目录生成后仅发布缺失图片。
+async function processFile(filePath, signal) {
+  const fileName = path.basename(filePath);
+  const duration = await getVideoDuration(filePath, signal);
+  const plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, Const.OutputImgDir);
+  const missing = [];
+  for (const frame of plan) {
+    signal.throwIfAborted();
+    if (!await isValidImage(frame.outputPath)) missing.push(frame);
+  }
+  if (!missing.length) {
+    logger.log(`⏭ ${fileName}: ${plan.length} 张图片全部命中缓存，跳过视频`);
+    return;
+  }
+
+  logger.log(`▶ ${fileName}: 时长 ${duration} 秒，预计 ${plan.length} 张，缓存 ${plan.length - missing.length} 张，单进程补齐 ${missing.length} 张`);
+  // 临时图片没有 step_by 标记，合成命令不会将未完成的图片纳入。
+  const tempDir = await fs.mkdtemp(path.join(Const.OutputImgDir, ".frames-"));
+  try {
+    await execCommand(ffmpegPath, buildExtractionArgs(
+      filePath, tempDir, Const.ScreenshotIntervalSeconds, plan.length,
+    ), signal);
+    // FFmpeg 即便以 0 退出也可能没有输出足够的帧，发布前检查所有待补图片。
+    for (const frame of missing) {
+      if (!await isValidImage(path.join(tempDir, frame.tempName))) {
+        throw new Error(`未生成有效截图: ${path.basename(frame.outputPath)}`);
       }
-    });
-    proc.on("error", reject);
-  }).catch((e) => {
-    logger.log(`❌${outputPath}文件输出失败，自动跳过：${e.message}`);
+    }
+    let written = 0;
+    for (const frame of missing) {
+      signal.throwIfAborted();
+      // 再次检查，避免覆盖在这次解码期间已生成的有效缓存。
+      if (await isValidImage(frame.outputPath)) continue;
+      await fs.rename(path.join(tempDir, frame.tempName), frame.outputPath);
+      written++;
+    }
+    logger.log(`✅ ${fileName}: 新增 ${written} 张，缓存保留 ${plan.length - written} 张`);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+export async function runWithConcurrency(tasks, concurrency, signal) {
+  let nextIndex = 0;
+  const results = new Array(tasks.length);
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+    while (!signal?.aborted) {
+      const index = nextIndex++;
+      if (index >= tasks.length) return;
+      // 一条视频失败不影响队列中的其他视频。
+      try {
+        results[index] = { status: "fulfilled", value: await tasks[index]() };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
   });
+  await Promise.all(workers);
+  return results;
 }
 
-/**
- * 带并发限制的任务执行器
- * @param {Array<() => Promise<any>>} tasks 任务函数数组
- * @param {number} concurrency 最大并发数
- * @returns {Promise<any[]>}
- */
-async function runWithConcurrency(tasks, concurrency) {
-  const results = [];
-  const executing = [];
-
-  for (const task of tasks) {
-    const p = task().then((result) => {
-      // 任务完成后从执行中数组移除
-      const index = executing.indexOf(p);
-      if (index !== -1) executing.splice(index, 1);
-      return result;
-    });
-    results.push(p);
-    executing.push(p);
-
-    if (executing.length >= concurrency) {
-      await Promise.race(executing);
+export function assertUniqueOutputNames(files) {
+  const seen = new Map();
+  for (const file of files) {
+    const key = path.basename(file, path.extname(file)).toLowerCase();
+    if (seen.has(key)) {
+      throw new Error(`不同目录的视频会生成同名图片，请先处理重名: ${seen.get(key)} / ${file}`);
     }
-  }
-  return Promise.all(results);
-}
-
-/**
- * 处理单个视频文件
- * @param {string} filePath 视频文件完整路径
- * @param {string} fileName 文件名（不含路径）
- */
-async function processFile(filePath, fileName) {
-  const baseName = path.basename(fileName, path.extname(fileName));
-  logger.log("--------------------------------------------");
-  logger.log(`正在处理: ${filePath}`);
-
-  // 1. 获取视频总时长
-  let duration;
-  try {
-    duration = await getVideoDuration(filePath);
-    logger.log(`总时长: ${duration} 秒`);
-  } catch (err) {
-    logger.error(
-      `获取视频时长失败: ${err.message}, 跳过对文件${filePath}的读取`,
-    );
-    return; // 跳过此文件
-  }
-
-  if (duration <= 0) {
-    logger.warn(`视频时长为 ${duration}，跳过处理`);
-    return;
-  }
-
-  // 2. 从第 0 秒开始，按公共配置的秒数间隔准备截图任务
-  const tasks = [];
-  let count = 0;
-  for (let i = 0; i < duration; i += Const.ScreenshotIntervalSeconds) {
-    const formattedCount = String(count).padStart(4, "0");
-    const outputImage = path.join(
-      Const.OutputImgDir,
-      `${baseName}_${formattedCount}_step_by_${Const.ScreenshotIntervalSeconds}s.jpg`,
-    );
-    const seekSecond = i;
-    // 添加断点续传逻辑
-    try {
-      const stats = await fs.stat(outputImage);
-      if (stats.size > 100) {
-        logger.log(`${outputImage}文件已存在，跳过生成逻辑`);
-      }
-    } catch (error) {
-      // 文件尚不存在，正常生成
-      tasks.push(() => {
-        logger.log(
-          `开始导出: ${fileName} 第 ${seekSecond}/${duration} 秒 -> ${path.basename(outputImage)}`,
-        );
-        return extractFrame(filePath, seekSecond, outputImage);
-      });
-    } finally {
-      // 文件序列必须递增
-      count++;
-    }
-  }
-
-  if (tasks.length === 0) {
-    logger.log(`未生成任何截图任务`);
-    return;
-  }
-
-  const concurrencyCount = 30;
-
-  // 3. 并发执行任务（每批最多10个）
-  logger.log(
-    `开始处理 ${tasks.length} 个截图任务，并发数 ${concurrencyCount}...`,
-  );
-  try {
-    await runWithConcurrency(tasks, concurrencyCount);
-    logger.log(
-      `完成！共提取了 ${tasks.length} 张图片到 ${Const.OutputImgDir} 目录。`,
-    );
-  } catch (err) {
-    logger.error(`处理过程中发生错误: ${err.message}`);
+    seen.set(key, file);
   }
 }
 
-/**
- * 主函数
- */
 async function main() {
   const startAt = dayjs().unix();
+  const controller = new AbortController();
+  const onInterrupt = () => { process.exitCode = 130; controller.abort(); };
+  const onTerminate = () => { process.exitCode = 143; controller.abort(); };
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
   try {
     Const.validateScreenshotInterval();
-    // 确保输出目录存在
-    await fs.mkdir(Const.OutputImgDir, { recursive: true });
-    logger.log(`✅输出目录准备完毕: ${Const.OutputImgDir}`);
-
-    // 递归读取所有视频，并按完整 URI 路径确定处理顺序
+    Const.validateVideoConcurrency();
     const mp4Files = await getAllVideos(Const.InputVideoDir);
     mp4Files.sort((a, b) => a.localeCompare(b));
-
-    // 执行前最后确认
-    await Const.asyncConfirmIt(
-      `共有${mp4Files.length}条视频待处理，每 ${Const.ScreenshotIntervalSeconds} 秒截取一张图片`,
-    );
-
-    if (mp4Files.length === 0) {
+    assertUniqueOutputNames(mp4Files);
+    if (!mp4Files.length) {
       logger.log(`在 ${Const.InputVideoDir} 及其子目录中未找到任何 .mp4 文件`);
       return;
     }
-
-    // 顺序处理每个文件（文件之间不并发，与 Bash 脚本行为一致）
-    let fileCounter = 0;
-    for (const fullPath of mp4Files) {
-      fileCounter++;
-      await processFile(fullPath, path.basename(fullPath));
-      const currentAt = dayjs().unix();
-      const durationAt = currentAt - startAt;
-      logger.log(
-        `✅第${fileCounter}/${mp4Files.length}个文件处理完毕，当前耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
-      );
-    }
-
-    logger.log("所有任务已全部完成！");
-  } catch (err) {
-    logger.error(`主流程出错: ${err.message}`);
-    process.exit(1);
-  } finally {
-    const endAt = dayjs().unix();
-    const durationAt = endAt - startAt;
-    logger.log(
-      `执行完毕，总耗时${durationAt}秒，${Math.floor(durationAt / 60)}分钟`,
+    await Const.asyncConfirmIt(
+      `共有 ${mp4Files.length} 条视频，每 ${Const.ScreenshotIntervalSeconds} 秒一张，每视频一个 FFmpeg，最多并发 ${Const.VideoConcurrency} 条视频`,
     );
+    controller.signal.throwIfAborted();
+    await fs.mkdir(Const.OutputImgDir, { recursive: true });
+    let completed = 0;
+    const tasks = mp4Files.map((filePath) => async () => {
+      try {
+        await processFile(filePath, controller.signal);
+      } catch (error) {
+        logger.error(`❌ ${filePath}: ${error.message}`);
+        throw error;
+      } finally {
+        completed++;
+        logger.log(`进度 ${completed}/${mp4Files.length}，耗时 ${dayjs().unix() - startAt} 秒`);
+      }
+    });
+    const results = await runWithConcurrency(tasks, Const.VideoConcurrency, controller.signal);
+    const failed = results.filter((result) => result?.status === "rejected").length;
+    if (controller.signal.aborted) {
+      logger.warn("已停止排队并结束本次启动的子进程");
+    } else if (failed) {
+      process.exitCode = 1;
+      logger.error(`处理结束，${failed} 条视频失败；修复原因后可重新运行补齐`);
+    } else {
+      logger.log("所有视频处理完成！");
+    }
+  } catch (error) {
+    logger.error(`主流程出错: ${error.message}`);
+    process.exitCode ||= 1;
+  } finally {
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onTerminate);
+    logger.log(`执行完毕，总耗时 ${dayjs().unix() - startAt} 秒`);
   }
 }
 
-// 运行主函数
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

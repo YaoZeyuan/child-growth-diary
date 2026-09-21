@@ -16,6 +16,8 @@ export const OutputImgDir = path.resolve(BaseDir, "output");
 
 // 截图间隔（秒）：写入图片名的 step_by_Ns 标记，合成时只选取匹配此间隔的图片。
 export const ScreenshotIntervalSeconds = 10;
+// 同时处理的视频数，每个视频最多启动一个 FFmpeg 进程。
+export const VideoConcurrency = 10;
 // 图片、备份视频整理月份（YYYYMM）。
 export const TargetMonth = "202512";
 
@@ -28,6 +30,12 @@ export function validateScreenshotInterval() {
   }
 }
 
+export function validateVideoConcurrency() {
+  if (!Number.isSafeInteger(VideoConcurrency) || VideoConcurrency <= 0) {
+    throw new Error("VideoConcurrency 必须为正整数");
+  }
+}
+
 export const asyncConfirmIt = async (tip = "") => {
   const rl = readline.createInterface({ input, output });
   console.log(`待处理视频所在目录: ${InputVideoDir}`);
@@ -37,6 +45,9 @@ export const asyncConfirmIt = async (tip = "") => {
   if (tip) {
     console.log(tip);
   }
-  const line = await rl.question("点按任意键继续...");
-  return;
+  try {
+    await rl.question("点按任意键继续...");
+  } finally {
+    rl.close();
+  }
 };
