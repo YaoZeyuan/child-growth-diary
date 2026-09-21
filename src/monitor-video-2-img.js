@@ -221,10 +221,14 @@ async function processFile(filePath, fileName) {
     return;
   }
 
+  const concurrencyCount = 30;
+
   // 3. 并发执行任务（每批最多10个）
-  logger.log(`开始处理 ${tasks.length} 个截图任务，并发数 10...`);
+  logger.log(
+    `开始处理 ${tasks.length} 个截图任务，并发数 ${concurrencyCount}...`,
+  );
   try {
-    await runWithConcurrency(tasks, 10);
+    await runWithConcurrency(tasks, concurrencyCount);
     logger.log(
       `完成！共提取了 ${tasks.length} 张图片到 ${Const.OutputImgDir} 目录。`,
     );
