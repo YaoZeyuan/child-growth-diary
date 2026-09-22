@@ -45,11 +45,14 @@ export const TargetMonth = "202609"; // 整理月份，格式为 YYYYMM
 pnpm install
 pnpm download-person-model
 
-# 先处理路径排序后的前 100 张
-pnpm detect-person --limit 100
-
-# 检测 output 及全部子目录中的 JPG/JPEG；不按截图间隔筛选
+# 默认查验模式：处理 URI 升序的前 100 张，同时生成 JSON 和 HTML
 pnpm detect-person
+
+# 指定查验数量
+pnpm detect-person --limit 500
+
+# 检测 output 及全部子目录中的 JPG/JPEG；数十万张时可省略 HTML
+pnpm detect-person --all --no-html
 ```
 
 模型下载到 `models/yolo26s.onnx`，约 36.5 MiB，下载及默认模型加载时均核对 SHA-256。[模型来源及格式](./models/README.md)。当前 Windows x64 所需的 ONNX Runtime CPU / DirectML 二进制已随 npm 包提供；pnpm 提示忽略 onnxruntime-node 的安装脚本不影响此 Windows 用法。
@@ -81,39 +84,55 @@ try {
 
 批量使用同一个 detector，逐张 `await`，不要为每张图片重新加载模型或并发调用同一个会话。
 
-## 批量结果与中断续跑
+## JSON 清单与 HTML 查验页
 
-默认结果：`detection-results/person-results.jsonl`，每行是一个 JSON 对象，`hasPerson` 是布尔值。例如（省略缓存字段）：
+默认生成两个文件：
+
+- `detection-results/person-images.json`：**只包含本次检测到人的图片 URI**，去重、升序排列的标准 JSON 字符串数组。URI 使用带盘符的绝对路径并统一为正斜杠，保留可读的中文文件夹名。
+- `detection-results/person-review.html`：双击可在浏览器离线打开。展示本次尝试检测的所有图片，严格每行 10 格，每格先显示可点击的完整 URI，再显示图片。有人绿色，未检出人红色，检测错误灰色；同时显示置信度。小屏幕可横向滚动，点击 URI 打开原图。
+
+JSON 格式示例：
 
 ```json
-{"file":"D:/姚九悦/监控视频/output/example.jpg","hasPerson":true,"confidence":0.72}
+[
+  "D:/姚九悦/监控视频/output/20251219231508_20251219235717_0000_step_by_10s.jpg",
+  "D:/姚九悦/监控视频/output/20251219231508_20251219235717_0001_step_by_10s.jpg"
+]
 ```
 
-实际记录还包括文件大小、修改时间、模型哈希、阈值、预处理版本和推理设备，用于防止误用过期缓存。再次执行同一命令会跳过已完成且配置未变化的图片。按 Ctrl+C 会在当前图片处理完后保存退出；失败图片不写入布尔结果，下次重新尝试。
+JSON 和 HTML 每次输出本次结果，不混入其他批次的历史缓存。默认 100 张是按 URI 排序的前 100 张，不是随机抽样。`--limit N` 自定义数量，`--all` 才检查所有图片；两个参数不能同时使用。HTML 引用原始图片，使用懒加载；需要保持原图位置不变。全量有数十万张时建议加 `--no-html`，避免生成过大的查验页。
 
-同一文件更新或重新检测后会追加记录，读取时以同一路径的最后一条为准。可以用 `readDetectionCache()` 得到最新结果的 Map：
-
-```js
-import { readDetectionCache } from "./src/detection-cache.js";
-const { records } = await readDetectionCache("detection-results/person-results.jsonl");
-const record = records.get(absoluteImagePath);
-// record?.hasPerson === false 才是明确的检测负例；缺少记录不能当作 false。
-// 用于合成前还应核对 size / mtimeMs 和当前检测配置，避免使用过期结果。
-```
-
-本步骤生成检测结果；现有 `screenshot-2-video` 尚未读取该结果进行筛选。
-
-常用选项：
+自定义输出和检测参数：
 
 ```powershell
-pnpm detect-person --input "output/20260101" --results "detection-results/day.jsonl"
+pnpm detect-person --limit 200 --json "detection-results/check-200.json" --html "detection-results/check-200.html"
+pnpm detect-person --input "output/20260101" --all --json "detection-results/day.json" --html "detection-results/day.html"
 pnpm detect-person --limit 100 --provider cpu
-pnpm detect-person --limit 100 --confidence 0.05 --results "detection-results/low-threshold.jsonl"
-pnpm detect-person --limit 100 --no-cache
+pnpm detect-person --limit 100 --confidence 0.05 --json "detection-results/low-threshold.json" --html "detection-results/low-threshold.html"
 pnpm detect-person --help
 ```
 
-`--limit` 取排序后的前 N 张，包含缓存命中的图片。`--no-cache` 会重新检测并追加结果。相对输入/结果路径相对于当前工作目录。结果文件有排他锁：异常终止遗留 `.lock` 时，先确认对应检测进程已停止，再删除那一个锁文件。最后一条未写完的 JSON 会在下次恢复；中间损坏的行会报错。磁盘写入失败会立即停止，以保留可恢复的末行。
+## 在 pnpm s3 中使用有人图片清单
+
+```powershell
+# 只核对清单可合成的数量，不写列表、不调用 FFmpeg
+pnpm s3 --person-json "detection-results/person-images.json" --dry-run
+
+# 将清单中的有人图片合成视频
+pnpm s3 --person-json "detection-results/person-images.json"
+```
+
+只有显式传入 `--person-json` 才按该清单合成；无参数 `pnpm s3` 仍扫描原来的 output 目录。清单模式仍筛选当前 `ScreenshotIntervalSeconds` 对应的完整间隔后缀，并校验文件名；每日模式也会先应用此筛选，再选择每天第一张。清单中路径不存在时会报错；空数组不会退回全目录合成。
+
+默认查验只包含前 100 张，正式合成全量前请先完成 `pnpm detect-person --all --no-html`。不要在图片整理或移动前生成最终清单。
+
+## 中断续跑
+
+内部仍使用 `detection-results/person-results.jsonl` 保存断点，后续合成不需要读取它。缓存包含文件大小、修改时间、模型哈希、阈值、预处理版本和推理设备。再次运行会复用配置和图片未变化的记录，但只将本次选中的图片导出至 JSON / HTML。
+
+`--cache PATH` 可指定缓存位置，旧 `--results PATH` 是兼容别名。`--no-cache` 重新检测本次选中的图片。相对路径均相对于当前工作目录。按 Ctrl+C 会在当前图片完成后退出，导出已完成的部分；HTML 会标注中断状态。发生逐图错误时 HTML 显示灰色、命令退出码非零，JSON 只包含成功识别为有人的图片。因此中断或失败后应重跑完成，再使用清单进行正式合成。
+
+缓存文件有排他锁：异常终止遗留 `.lock` 时，先确认对应进程已停止，再删除那一个锁文件。最后一条未写完的 JSON 会在下次恢复；中间损坏的行会报错。磁盘写入失败会立即停止，以保留可恢复的末行。
 
 ## 实测与识别限制
 

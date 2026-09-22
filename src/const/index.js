@@ -17,7 +17,7 @@ export const OutputImgDir = path.resolve(BaseDir, "output");
 // 截图间隔（秒）：写入图片名的 step_by_Ns 标记，合成时只选取匹配此间隔的图片。
 export const ScreenshotIntervalSeconds = 10;
 // 同时处理的视频数，每个视频最多启动一个 FFmpeg 进程。
-export const VideoConcurrency = 10;
+export const VideoConcurrency = 3;
 // 图片、备份视频整理月份（YYYYMM）。
 export const TargetMonth = "202512";
 

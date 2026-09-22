@@ -5,6 +5,8 @@ import { execFileSync, spawn } from "child_process";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat.js";
 import { logger } from "./util/logger.js";
+import { pathToFileURL } from "node:url";
+import { compareImageUris, readPersonImageList } from "./person-image-list.js";
 
 dayjs.extend(customParseFormat);
 
@@ -24,7 +26,40 @@ const outputVideo = path.resolve(
   `${flag_每日一张图模式 ? "每日一张图" : "小朋友成长记"}_output.mp4`,
 );
 
-async function main() {
+export function parseVideoArgs(argv) {
+  const options = { personJson: null, dryRun: false, help: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--") continue;
+    if (arg === "--person-json") {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--person-json 后必须指定 JSON 文件路径");
+      }
+      options.personJson = path.resolve(value);
+    } else if (arg === "--dry-run") {
+      options.dryRun = true;
+    } else if (arg === "--help" || arg === "-h") {
+      options.help = true;
+    } else {
+      throw new Error(`未知参数: ${arg}，使用 --help 查看用法`);
+    }
+  }
+  return options;
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  const options = parseVideoArgs(argv);
+  if (options.help) {
+    console.log(`用法: pnpm s3 [--person-json <JSON路径>] [--dry-run]
+
+  --person-json <路径>  只合成清单中的图片；JSON 必须为绝对 JPG/JPEG 路径或本地 file URI 的字符串数组
+  --dry-run             打印匹配数量及清单来源，不运行 FFmpeg、不改写图片列表或视频
+  --help, -h            显示帮助
+
+未指定 --person-json 时，仍扫描 output 目录。所有模式均保留当前截图间隔及文件名校验。`);
+    return;
+  }
   Const.validateScreenshotInterval();
   const intervalTag = `_step_by_${Const.ScreenshotIntervalSeconds}s`;
 
@@ -111,7 +146,11 @@ async function main() {
   }
 
   // 1. 获取并排序
-  let rawImageFileList = getAllImages(Output_Dir);
+  const rawImageFileList = options.personJson
+    ? readPersonImageList(options.personJson).filter((item) =>
+        path.basename(item, path.extname(item)).endsWith(intervalTag),
+      )
+    : getAllImages(Output_Dir);
   // 解析文件名，转换为时间戳
   let imageFileList = [];
   for (const item of rawImageFileList) {
@@ -149,16 +188,17 @@ async function main() {
   }
 
   if (imageFileList.length === 0) {
+    const source = options.personJson
+      ? `清单 ${options.personJson}`
+      : `${Output_Dir} 及其子目录`;
     logger.warn(
-      `在 ${Output_Dir} 及其子目录中未找到匹配 ${intervalTag} 的可合成图片`,
+      `在 ${source} 中未找到匹配 ${intervalTag} 的可合成图片`,
     );
-    return;
+    if (!options.dryRun) return;
   }
 
   // 目录和文件名已有序，按完整 URI 路径确定合成顺序
-  imageFileList.sort((a, b) => {
-    return a.fileUri.localeCompare(b.fileUri);
-  });
+  imageFileList.sort((a, b) => compareImageUris(a.fileUri, b.fileUri));
 
   // 只输出每天的第一张照片
   const imageFileByDay = {};
@@ -172,11 +212,18 @@ async function main() {
     }
   }
 
+  const selectedImages = flag_每日一张图模式
+    ? firstImgageFileOfDayList
+    : imageFileList;
+  if (options.dryRun) {
+    logger.log(`JSON 来源: ${options.personJson || "未指定（扫描 output 目录）"}`);
+    logger.log(`匹配 ${intervalTag}，本次将合成 ${selectedImages.length} 张图片`);
+    return;
+  }
+
   // 2. 写入 FFmpeg concat 格式文件
   // 格式要求：file '/path/to/image.jpg'
-  const fileContent = (
-    flag_每日一张图模式 ? firstImgageFileOfDayList : imageFileList
-  )
+  const fileContent = selectedImages
     .map((imgFile) => {
       const imagePath = path.resolve(imgFile.fileUri).replaceAll("\\", "/");
       return `file '${imagePath.replaceAll("'", "'\\''")}'`;
@@ -249,7 +296,12 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  logger.error(`合成失败: ${err.message}`);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
+  main().catch((err) => {
+    logger.error(`合成失败: ${err.message}`);
+    process.exitCode = 1;
+  });
+}

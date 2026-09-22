@@ -113,6 +113,13 @@ test('directory scan handles nested mixed-case JPG/JPEG, sorts files and ignores
 });
 
 test('CLI rejects ambiguous or invalid options before loading the model', () => {
+  assert.equal(parseArgs([]).limit, 100);
+  assert.equal(parseArgs(['--all']).limit, undefined);
+  assert.equal(parseArgs(['--all', '--no-html']).htmlPath, undefined);
+  assert.throws(() => parseArgs(['--all', '--limit', '100']), /不能/);
+  assert.throws(() => parseArgs(['--html', 'review.html', '--no-html']), /不能/);
+  assert.throws(() => parseArgs(['--json', 'picture.jpg']), /json/);
+  assert.throws(() => parseArgs(['--json', 'results.json', '--cache', 'results.json']), /不同文件/);
   assert.throws(() => parseArgs(['--confidence', 'NaN']), /confidence/);
   assert.throws(() => parseArgs(['--confidence', '0']), /confidence/);
   assert.throws(() => parseArgs(['--confidence', '1.1']), /confidence/);
