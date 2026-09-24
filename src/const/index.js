@@ -16,10 +16,14 @@ export const OutputImgDir = path.resolve(BaseDir, "output");
 
 // 截图间隔（秒）：写入图片名的 step_by_Ns 标记，合成时只选取匹配此间隔的图片。
 export const ScreenshotIntervalSeconds = 10;
-// 同时处理的视频数，每个视频最多启动一个 FFmpeg 进程。
-export const VideoConcurrency = 3;
+
+export const VideoConcurrency = 3; // NVIDIA CUDA worker 数，保留原配置名
+export const CpuVideoConcurrency = 3; // CPU 软件解码 worker 数，0 为关闭
+export const CpuDecodeThreads = 3; // 每个 CPU 提取进程的解码线程数
+export const IntegratedGpuConcurrency = 1; // AMD 核显 D3D11VA 解码并发数，0 为关闭
+
 // 图片、备份视频整理月份（YYYYMM）。
-export const TargetMonth = "202512";
+export const TargetMonth = "202609";
 
 export function validateScreenshotInterval() {
   if (
@@ -31,8 +35,21 @@ export function validateScreenshotInterval() {
 }
 
 export function validateVideoConcurrency() {
-  if (!Number.isSafeInteger(VideoConcurrency) || VideoConcurrency <= 0) {
-    throw new Error("VideoConcurrency 必须为正整数");
+  const counts = {
+    VideoConcurrency,
+    CpuVideoConcurrency,
+    IntegratedGpuConcurrency,
+  };
+  for (const [name, value] of Object.entries(counts)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${name} 必须为非负整数，0 表示关闭该通道`);
+    }
+  }
+  if (Object.values(counts).every((value) => value === 0)) {
+    throw new Error("至少需要启用一个视频提取通道");
+  }
+  if (!Number.isSafeInteger(CpuDecodeThreads) || CpuDecodeThreads <= 0) {
+    throw new Error("CpuDecodeThreads 必须为正整数");
   }
 }
 
