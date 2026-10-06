@@ -13,7 +13,7 @@ export const BaseDir = path.resolve(__dirname, "..", "..");
 export const InputVideoDir = path.resolve(BaseDir, "input");
 export const BackupVideoDir = path.resolve(BaseDir, "backup");
 export const OutputImgDir = path.resolve(BaseDir, "output");
-// 视频 URI 对应的时长（秒），跨运行复用，不依赖截图间隔或整理月份。
+// duration 保存视频 URI 对应的时长（秒）；ignore 中 URI 为 true 时跳过提取。
 export const VideoDurationCachePath = path.resolve(BaseDir, "cache", "video-durations.json");
 
 // 截图间隔（秒）：写入图片名的 step_by_Ns 标记，合成时只选取匹配此间隔的图片。
@@ -23,6 +23,12 @@ export const VideoConcurrency = 3; // NVIDIA CUDA worker 数，保留原配置�
 export const CpuVideoConcurrency = 1; // CPU 软件解码 worker 数，0 为关闭
 export const CpuDecodeThreads = 10; // 每个 CPU 提取进程的解码线程数
 export const IntegratedGpuConcurrency = 1; // AMD 核显 D3D11VA 解码并发数，0 为关闭
+
+// 排查 worker 空闲/停滞：心跳秒数，0 表示关闭心跳。
+export const WorkerStatusIntervalSeconds = 15;
+export const WorkerStallWarningSeconds = 120; // 无新截图输出超过此秒数时仅提示
+export const FfmpegProgressIntervalSeconds = 5; // FFmpeg 内部进度采样间隔
+export const NvidiaDiagnosticsEnabled = true; // 只读查询 NVIDIA 解码率/显存
 
 // 图片、备份视频整理月份（YYYYMM）。
 export const TargetMonth = "202609";
@@ -53,6 +59,16 @@ export function validateVideoConcurrency() {
   if (!Number.isSafeInteger(CpuDecodeThreads) || CpuDecodeThreads <= 0) {
     throw new Error("CpuDecodeThreads 必须为正整数");
   }
+}
+
+export function validateWorkerDiagnostics() {
+  if (!Number.isSafeInteger(WorkerStatusIntervalSeconds) || WorkerStatusIntervalSeconds < 0) {
+    throw new Error("WorkerStatusIntervalSeconds 必须为非负整数，0 为关闭心跳");
+  }
+  for (const [name, value] of Object.entries({ WorkerStallWarningSeconds, FfmpegProgressIntervalSeconds })) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为正整数`);
+  }
+  if (typeof NvidiaDiagnosticsEnabled !== "boolean") throw new Error("NvidiaDiagnosticsEnabled 必须为布尔值");
 }
 
 export const asyncConfirmIt = async (tip = "") => {
