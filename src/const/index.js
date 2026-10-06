@@ -18,8 +18,8 @@ export const OutputImgDir = path.resolve(BaseDir, "output");
 export const ScreenshotIntervalSeconds = 10;
 
 export const VideoConcurrency = 3; // NVIDIA CUDA worker 数，保留原配置名
-export const CpuVideoConcurrency = 3; // CPU 软件解码 worker 数，0 为关闭
-export const CpuDecodeThreads = 3; // 每个 CPU 提取进程的解码线程数
+export const CpuVideoConcurrency = 1; // CPU 软件解码 worker 数，0 为关闭
+export const CpuDecodeThreads = 10; // 每个 CPU 提取进程的解码线程数
 export const IntegratedGpuConcurrency = 1; // AMD 核显 D3D11VA 解码并发数，0 为关闭
 
 // 图片、备份视频整理月份（YYYYMM）。
