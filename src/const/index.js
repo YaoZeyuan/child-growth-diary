@@ -15,6 +15,10 @@ export const BackupVideoDir = path.resolve(BaseDir, "backup");
 export const OutputImgDir = path.resolve(BaseDir, "output");
 // duration 保存视频 URI 对应的时长（秒）；ignore 中 URI 为 true 时跳过提取。
 export const VideoDurationCachePath = path.resolve(BaseDir, "cache", "video-durations.json");
+export const ScreenshotTaskManifestPath = path.resolve(BaseDir, "cache", "screenshot-tasks.json");
+export const TaskProgressHtmlPath = path.resolve(BaseDir, "cache", "screenshot-progress.html");
+export const TaskManifestFlushIntervalSeconds = 5; // 整体任务 JSON / HTML 快照保存间隔
+export const VideoProbeConcurrency = 4; // 规划阶段读取时长和检查已有图片的 worker 数
 
 // 截图间隔（秒）：写入图片名的 step_by_Ns 标记，合成时只选取匹配此间隔的图片。
 export const ScreenshotIntervalSeconds = 10;
@@ -23,6 +27,10 @@ export const VideoConcurrency = 3; // NVIDIA CUDA worker 数，保留原配置�
 export const CpuVideoConcurrency = 1; // CPU 软件解码 worker 数，0 为关闭
 export const CpuDecodeThreads = 10; // 每个 CPU 提取进程的解码线程数
 export const IntegratedGpuConcurrency = 1; // AMD 核显 D3D11VA 解码并发数，0 为关闭
+
+export const ImageOutputByVideo = true; // 新视频按视频建目录，整理时一次移动整个目录；已有平铺图片保持原位置
+export const ImageMoveConcurrency = 6; // 图片校验、移动和清理 worker 数
+export const ImageMoveQueueCapacity = 10; // 最多等待整理的视频数，满后截图 worker 等待
 
 // 排查 worker 空闲/停滞：心跳秒数，0 表示关闭心跳。
 export const WorkerStatusIntervalSeconds = 15;
@@ -43,6 +51,10 @@ export function validateScreenshotInterval() {
 }
 
 export function validateVideoConcurrency() {
+  if (typeof ImageOutputByVideo !== "boolean") throw new Error("ImageOutputByVideo 必须为布尔值");
+  for (const [name, value] of Object.entries({ ImageMoveConcurrency, ImageMoveQueueCapacity, VideoProbeConcurrency, TaskManifestFlushIntervalSeconds })) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为正整数`);
+  }
   const counts = {
     VideoConcurrency,
     CpuVideoConcurrency,

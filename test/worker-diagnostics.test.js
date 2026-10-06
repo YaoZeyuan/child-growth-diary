@@ -155,3 +155,46 @@ test("unavailable NVIDIA metrics warn once and leave subsequent worker heartbeat
   assert.equal(heartbeat.warnings.length, 1);
   assert.equal(heartbeat.logs.filter(line => line.includes("任务池")).length, 2);
 });
+
+test("heartbeat distinguishes video extraction and image movement queues", async t => {
+  const workers = new Map([
+    ["nvidia-worker-1", { id: "nvidia-worker-1", phase: "enqueue", phaseStartedAt: performance.now(), filePath: "D:\\input\\ready.mp4" }],
+    ["image-worker-1", { id: "image-worker-1", phase: "publish", phaseStartedAt: performance.now(), filePath: "D:\\input\\moving.mp4", checkedFrames: 3, expectedFrames: 10, checkTotal: 6 }],
+  ]);
+  const heartbeat = createHeartbeat({
+    workers,
+    getQueueStats: () => ({
+      completed: 4, total: 10, queued: 2, extractionCompleted: 8,
+      imageQueued: 3, imageActive: 1, imageWaitingProducers: 2,
+    }),
+  });
+  t.after(() => heartbeat.stop());
+  await heartbeat.tick();
+  assert.equal(heartbeat.logs[0], "💓 任务池：最终完成 4/10，视频排队 2，截图任务已处理 8，待整理 3，整理中 1，等待入队 2");
+  assert.match(heartbeat.logs[1], /\[nvidia-worker-1\] 等待整理队列.*ready\.mp4/);
+  assert.match(heartbeat.logs[2], /\[image-worker-1\] 移动图片.*moving\.mp4.*移动 3\/6/);
+  assert.equal(heartbeat.warnings.length, 0);
+});
+
+test("queue heartbeat preserves legacy layout and displays explicit zero counts for split queues", async t => {
+  const legacy = createHeartbeat();
+  const split = createHeartbeat({
+    getQueueStats: () => ({ completed: 0, total: 8, queued: 8, extractionCompleted: 0, imageQueued: 0, imageActive: 0, imageWaitingProducers: 0 }),
+  });
+  t.after(() => Promise.all([legacy.stop(), split.stop()]));
+  await legacy.tick();
+  await split.tick();
+  assert.equal(legacy.logs[0], "💓 任务池：完成 2/8，排队 4");
+  assert.equal(split.logs[0], "💓 任务池：最终完成 0/8，视频排队 8，截图任务已处理 0，待整理 0，整理中 0，等待入队 0");
+});
+
+test("idle and finished workers do not display stale video, PID or image progress", () => {
+  for (const phase of ["idle", "finished"]) {
+    const worker = {
+      id: "image-worker-2", phase, phaseStartedAt: 0, filePath: "D:\\input\\previous.mp4", pid: 123,
+      checkedFrames: 40, expectedFrames: 100, checkTotal: 40, progress: { frame: 100, outputSeconds: 1000, speed: "5x" },
+    };
+    const text = formatWorkerHeartbeat(worker, 1500);
+    assert.equal(text, `[image-worker-2] ${phase === "idle" ? "等待任务" : "已结束"} 1.5 秒`);
+  }
+});

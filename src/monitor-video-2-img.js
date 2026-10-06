@@ -9,6 +9,9 @@ import dayjs from "dayjs";
 import * as Const from "./const/index.js";
 import { logger } from "./util/logger.js";
 import { VideoDurationCache } from "./video-duration-cache.js";
+import { createImageTaskPool } from "./image-task-pool.js";
+import { ScreenshotTaskManifest } from "./screenshot-task-manifest.js";
+import { writeTaskProgressHtml } from "./task-progress-html.js";
 import { createFfmpegProgressParser, setWorkerPhase, startWorkerHeartbeat } from "./worker-diagnostics.js";
 
 const ffmpegBinDir = path.resolve(Const.BaseDir, "src", "ffmpeg", "bin");
@@ -19,8 +22,16 @@ const decoderLabels = { cuda: "NVIDIA", cpu: "CPU", d3d11va: "AMD 核显" };
 const workerPrefixes = { cuda: "nvidia", cpu: "cpu", d3d11va: "amd" };
 
 function formatWorkerStats(worker) {
+  if (worker.backend === "probe") {
+    const {processed, extracted, skipped, failed, cancelled, workingSeconds} = worker.stats;
+    return `[${worker.id}] 累计规划 ${processed} 个视频（待截图 ${extracted}、缓存完成 ${skipped}、失败 ${failed}、中断 ${cancelled}），累计工作 ${workingSeconds.toFixed(1)} 秒`;
+  }
+  if (!worker.backend) {
+    const {processed, moved, failed, cancelled, workingSeconds, imagesWritten = 0} = worker.stats;
+    return `[${worker.id}] 累计整理 ${processed} 个视频（成功 ${moved}、失败 ${failed}、中断 ${cancelled}），累计移动 ${imagesWritten} 张，累计工作 ${workingSeconds.toFixed(1)} 秒`;
+  }
   const { processed, extracted, skipped, failed, cancelled, workingSeconds } = worker.stats;
-  return `[${worker.id}] 累计处理 ${processed} 个视频（提取 ${extracted}、缓存跳过 ${skipped}、失败 ${failed}、中断 ${cancelled}），累计工作 ${workingSeconds.toFixed(1)} 秒`;
+  return `[${worker.id}] 累计处理 ${processed} 个视频（截图移交 ${extracted}、缓存跳过 ${skipped}、失败 ${failed}、中断 ${cancelled}），累计工作 ${workingSeconds.toFixed(1)} 秒`;
 }
 
 async function getAllVideos(dir, fileList = []) {
@@ -119,10 +130,16 @@ export function getScreenshotPlan(filePath, duration, interval, outputDir) {
   }));
 }
 
+function videoImageDirectory(filePath, videoTask) {
+  return videoTask.imageLayout === "video-directory"
+    ? path.join(Const.OutputImgDir, path.basename(filePath, path.extname(filePath)) + '_step_by_' + Const.ScreenshotIntervalSeconds + 's')
+    : Const.OutputImgDir;
+}
+
 async function isValidImage(filePath) {
   try {
     const stat = await fs.stat(filePath);
-    return stat.isFile() && stat.size > 100;
+    return stat.isFile() && stat.size > 0;
   } catch (error) {
     if (error.code === "ENOENT") return false;
     throw error;
@@ -170,7 +187,7 @@ async function saveFfmpegDiagnostic(worker, args, details, error) {
   await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, `${worker.runId}-${worker.id}-${randomUUID()}.log`);
   const metadata = {
-    worker: worker.id, run: worker.runId, nodePid: process.pid,
+    worker: worker.id, sourceWorker: worker.sourceWorkerId, run: worker.runId, nodePid: process.pid,
     video: worker.filePath, backend: worker.backend,
     duration: worker.duration, expectedFrames: worker.expectedFrames,
     actualFrames: worker.actualFrames, lastProgress: worker.progress,
@@ -183,32 +200,28 @@ async function saveFfmpegDiagnostic(worker, args, details, error) {
   logger.error(`诊断日志 [${worker.id}]: ${filePath}`);
 }
 
-// 全缓存跳过；补图时保留各阶段状态和 FFmpeg 的实际输出进展。
-async function processFile(filePath, signal, backend, durationCache, worker) {
+// 截图 worker 只负责缓存检查和 FFmpeg；入队成功后临时目录交由整理池接管。
+async function extractFile(filePath, signal, backend, taskManifest, worker, imagePool) {
   const fileName = path.basename(filePath);
   const label = `${decoderLabels[backend]} | ${worker.id}`;
   signal.throwIfAborted();
-  setWorkerPhase(worker, "probe");
-  const duration = await durationCache.getDuration(filePath, (videoPath) => getVideoDuration(videoPath, signal, worker));
-  const plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, Const.OutputImgDir);
-  setWorkerPhase(worker, "cachecheck", { duration, expectedFrames: plan.length, checkTotal: plan.length, checkedFrames: 0 });
-  const missing = [];
-  for (const frame of plan) {
-    signal.throwIfAborted();
-    if (!await isValidImage(frame.outputPath)) missing.push(frame);
-    worker.checkedFrames++;
-  }
+  const videoTask = taskManifest.getVideo(filePath);
+  const duration = videoTask.duration;
+  const plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, videoImageDirectory(filePath, videoTask));
+  const missing = plan.filter(frame => !videoTask.frames[frame.index]);
+  Object.assign(worker, {duration, expectedFrames: plan.length});
   if (!missing.length) {
     logger.log(`⏭ [${label}] ${fileName}: ${plan.length} 张图片全部命中缓存，跳过视频`);
-    return { skipped: true };
+    return {skipped: true};
   }
-
   logger.log(`▶ [${label}] ${fileName}: 时长 ${duration} 秒，预计 ${plan.length} 张，缓存 ${plan.length - missing.length} 张，单进程补齐 ${missing.length} 张`);
   const tempDir = await fs.mkdtemp(path.join(Const.OutputImgDir, ".frames-"));
   const args = buildExtractionArgs(filePath, tempDir, Const.ScreenshotIntervalSeconds, plan.length, backend);
   let ffmpegResult;
+  let handedOff = false;
   try {
-    setWorkerPhase(worker, "extract", { checkedFrames: 0, lastAdvanceAt: performance.now() });
+    setWorkerPhase(worker, "extract", {checkedFrames: 0, lastAdvanceAt: performance.now()});
+    taskManifest.setPhase(filePath, "extracting", {worker: worker.id});
     logger.log(`FFmpeg 命令 [${worker.id}]: ${JSON.stringify([ffmpegPath, ...args])}`);
     await execCommand(ffmpegPath, args, signal, {
       captureDetails: true,
@@ -223,7 +236,7 @@ async function processFile(filePath, signal, backend, durationCache, worker) {
           worker.lastAdvanceAt = performance.now();
         }
         worker.lastProgressAt = performance.now();
-        worker.progress = { ...previous, ...Object.fromEntries(Object.entries(packet).filter(([, value]) => value !== undefined)) };
+        worker.progress = {...previous, ...Object.fromEntries(Object.entries(packet).filter(([, value]) => value !== undefined))};
       },
       onDiagnostic(line) {
         if (/pixfmt:cuda\b|pixfmt:d3d11\b/.test(line) && !worker.hardwareConfirmed) {
@@ -241,38 +254,135 @@ async function processFile(filePath, signal, backend, durationCache, worker) {
         logger.log(`FFmpeg 退出 [${worker.id}] PID ${details.pid ?? "未知"}，code=${details.code}，signal=${details.signal || "无"}，耗时 ${details.elapsedSeconds.toFixed(1)} 秒，报告输出 ${worker.progress?.frame ?? "未知"}/${plan.length} 张，硬件帧证据=${backend === "cpu" ? "软件解码" : worker.hardwareConfirmed ? "已确认" : "未捕获"}`);
       },
     });
-    setWorkerPhase(worker, "verify", { checkTotal: missing.length, checkedFrames: 0 });
-    const tempFiles = await fs.readdir(tempDir);
-    worker.actualFrames = tempFiles.filter((name) => /^\d+\.jpg$/i.test(name)).length;
-    logger.log(`输出检查 [${worker.id}]: 预计 ${plan.length} 张，实际生成 ${worker.actualFrames} 张，本次待补 ${missing.length} 张`);
-    for (const frame of missing) {
-      signal.throwIfAborted();
-      if (!await isValidImage(path.join(tempDir, frame.tempName))) {
-        throw new Error(`未生成有效截图: ${path.basename(frame.outputPath)}；预计 ${plan.length} 张，实际 ${worker.actualFrames} 张`);
-      }
-      worker.checkedFrames++;
+    // 保存独立快照：原截图 worker 入队后会立即处理其他视频。
+    const job = {
+      filePath, sourceWorkerId: worker.id, fileName, backend, plan, missing, tempDir, args, ffmpegResult, taskManifest,
+      diagnostic: {id: worker.id, runId: worker.runId, filePath, backend, duration,
+        expectedFrames: plan.length, progress: {...worker.progress}, hardwareConfirmed: worker.hardwareConfirmed},
+    };
+    setWorkerPhase(worker, "enqueue", {pid: undefined, checkTotal: undefined, checkedFrames: undefined});
+    taskManifest.setPhase(filePath, "waiting_move", {worker: worker.id});
+    signal.throwIfAborted();
+    await imagePool.enqueue({
+      filePath, sourceWorkerId: worker.id,
+      run: imageWorker => organizeImages(job, signal, imageWorker),
+      cancel: imageWorker => organizeImages(job, signal, imageWorker),
+    });
+    handedOff = true;
+    if (taskManifest.getVideo(filePath).phase === "waiting_move") {
+      taskManifest.setPhase(filePath, "move_queued", {worker: null});
     }
-    setWorkerPhase(worker, "publish", { checkTotal: missing.length, checkedFrames: 0 });
-    let written = 0;
-    for (const frame of missing) {
-      signal.throwIfAborted();
-      if (!await isValidImage(frame.outputPath)) {
-        await fs.rename(path.join(tempDir, frame.tempName), frame.outputPath);
-        written++;
-      }
-      worker.checkedFrames++;
-    }
-    logger.log(`✅ [${label}] ${fileName}: 新增 ${written} 张，缓存保留 ${plan.length - written} 张`);
-    return { skipped: false };
+    logger.log(`📦 [${label}] ${fileName}: 截图生成结束，已移交整理队列`);
+    return {skipped: false};
   } catch (error) {
     if (!signal.aborted) {
-      try { await saveFfmpegDiagnostic(worker, args, ffmpegResult || error.processDetails, error); }
-      catch (diagnosticError) { logger.warn(`诊断日志保存失败 [${worker.id}]: ${diagnosticError.message}`); }
+      try {await saveFfmpegDiagnostic(worker, args, ffmpegResult || error.processDetails, error);}
+      catch (diagnosticError) {logger.warn(`诊断日志保存失败 [${worker.id}]: ${diagnosticError.message}`);}
     }
     throw error;
   } finally {
-    setWorkerPhase(worker, "cleanup", { pid: undefined });
-    await fs.rm(tempDir, { recursive: true, force: true });
+    // 成功入队后，只有整理 worker 能清理该目录，避免在移动前删除截图。
+    if (!handedOff) {
+      setWorkerPhase(worker, "cleanup", {pid: undefined});
+      await fs.rm(tempDir, {recursive: true, force: true});
+    }
+  }
+}
+
+async function organizeImages(job, signal, worker) {
+  const {filePath, fileName, plan, missing, tempDir, sourceWorkerId} = job;
+  Object.assign(worker, {
+    filePath, sourceWorkerId, runId: job.diagnostic.runId, stageTimes: {},
+    expectedFrames: plan.length, checkTotal: missing.length, checkedFrames: 0,
+    actualFrames: undefined, targetCheckSeconds: 0, renameSeconds: 0,
+    taskStartedAt: performance.now(),
+  });
+  let written = 0;
+  try {
+    try {
+      signal.throwIfAborted();
+      setWorkerPhase(worker, "verify");
+      job.taskManifest.setPhase(filePath, "verifying", {worker: worker.id});
+      logger.log(`▶ [图片整理 | ${worker.id}] ${fileName}，来源 ${sourceWorkerId}，待补 ${missing.length} 张`);
+      const tempFiles = await fs.readdir(tempDir);
+      worker.actualFrames = tempFiles.filter(name => /^\d+\.jpg$/i.test(name)).length;
+      logger.log(`输出检查 [${worker.id}，来源 ${sourceWorkerId}]: 预计 ${plan.length} 张，实际生成 ${worker.actualFrames} 张，本次待补 ${missing.length} 张`);
+      for (const frame of missing) {
+        signal.throwIfAborted();
+        if (!await isValidImage(path.join(tempDir, frame.tempName))) {
+          throw new Error(`未生成有效截图: ${path.basename(frame.outputPath)}；预计 ${plan.length} 张，实际 ${worker.actualFrames} 张`);
+        }
+        worker.checkedFrames++;
+      }
+      setWorkerPhase(worker, "publish", {checkedFrames: 0});
+      job.taskManifest.setPhase(filePath, "moving", {worker: worker.id});
+      const targetDir = path.dirname(plan[0].outputPath);
+      let wholeDirectory = false;
+      if (targetDir !== Const.OutputImgDir && missing.length === plan.length) {
+        try {await fs.stat(targetDir);} catch (error) {
+          if (error.code !== "ENOENT") throw error;
+          wholeDirectory = true;
+        }
+      }
+      if (wholeDirectory) {
+        // Rename within the small staging directory, then publish one directory entry.
+        for (const frame of missing) {
+          signal.throwIfAborted();
+          const renameStartedAt = performance.now();
+          try {await fs.rename(path.join(tempDir, frame.tempName), path.join(tempDir, path.basename(frame.outputPath)));}
+          finally {worker.renameSeconds += (performance.now() - renameStartedAt) / 1000;}
+          worker.checkedFrames++;
+        }
+        signal.throwIfAborted();
+        const startedAt = performance.now();
+        await fs.rename(tempDir, targetDir);
+        worker.directoryMoveSeconds = (performance.now() - startedAt) / 1000;
+        logger.log('整目录发布 [' + worker.id + ']: ' + missing.length + ' 张，目录移动 ' + worker.directoryMoveSeconds.toFixed(3) + ' 秒，目标 ' + targetDir);
+        for (const frame of missing) job.taskManifest.markFrameComplete(filePath, frame.index);
+        written = missing.length;
+        worker.stats.imagesWritten = (worker.stats.imagesWritten ?? 0) + written;
+      } else {
+        await fs.mkdir(targetDir, {recursive: true});
+        for (const frame of missing) {
+          signal.throwIfAborted();
+          const checkStartedAt = performance.now();
+          let valid;
+          try {valid = await isValidImage(frame.outputPath);}
+          finally {worker.targetCheckSeconds += (performance.now() - checkStartedAt) / 1000;}
+          if (!valid) {
+            signal.throwIfAborted();
+            const renameStartedAt = performance.now();
+            try {await fs.rename(path.join(tempDir, frame.tempName), frame.outputPath);}
+            finally {worker.renameSeconds += (performance.now() - renameStartedAt) / 1000;}
+            written++;
+            worker.stats.imagesWritten = (worker.stats.imagesWritten ?? 0) + 1;
+          }
+          job.taskManifest.markFrameComplete(filePath, frame.index);
+          worker.checkedFrames++;
+        }
+      }
+    } finally {
+      setWorkerPhase(worker, "cleanup");
+      try {await fs.rm(tempDir, {recursive: true, force: true});}
+      finally {setWorkerPhase(worker, "idle");}
+    }
+    job.taskManifest.setPhase(filePath, "completed", {worker: worker.id});
+    worker.stats.moved++;
+    logger.log(`✅ [图片整理 | ${worker.id}，来源 ${sourceWorkerId}] ${fileName}: 新增 ${written} 张，缓存保留 ${plan.length - written} 张`);
+    return {written};
+  } catch (error) {
+    if (signal.aborted) {
+      job.taskManifest.setPhase(filePath, "cancelled", {worker: worker.id, error: "已取消"});
+      logger.warn(`⏹ [图片整理 | ${worker.id}，来源 ${sourceWorkerId}] ${filePath}: 已取消`);
+    } else {
+      job.taskManifest.setPhase(filePath, "failed", {worker: worker.id, error: error.message});
+      logger.error(`❌ [图片整理 | ${worker.id}，来源 ${sourceWorkerId}] ${filePath}: ${error.message}`);
+      try {
+        await saveFfmpegDiagnostic({...job.diagnostic, id: worker.id, sourceWorkerId,
+          actualFrames: worker.actualFrames}, job.args, job.ffmpegResult, error);
+      } catch (diagnosticError) {logger.warn(`诊断日志保存失败 [${worker.id}]: ${diagnosticError.message}`);}
+    }
+    throw error;
   }
 }
 
@@ -357,117 +467,277 @@ export function assertUniqueOutputNames(files) {
   }
 }
 
+async function prepareScreenshotTasks(files, durationCache, taskManifest, signal, workerStats, onTerminal) {
+  let checked = 0;
+  const tasks = files.map(filePath => async (_, worker) => {
+    if (worker.backend !== "probe") {
+      worker.backend = "probe";
+      worker.id = worker.id.replace("cpu-worker-", "probe-worker-");
+    }
+    workerStats.set(worker.id, worker);
+    Object.assign(worker, {filePath, stageTimes: {}, pid: undefined, checkTotal: undefined,
+      checkedFrames: 0, expectedFrames: undefined});
+    const startedAt = performance.now();
+    try {
+      signal.throwIfAborted();
+      setWorkerPhase(worker, "probe");
+      taskManifest.setPhase(filePath, "probing", {worker: worker.id});
+      const duration = await durationCache.getDuration(filePath, videoPath => getVideoDuration(videoPath, signal, worker));
+      taskManifest.prepareVideo(filePath, duration);
+      const videoTask = taskManifest.getVideo(filePath);
+      let plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, videoImageDirectory(filePath, videoTask));
+      setWorkerPhase(worker, "cachecheck", {expectedFrames: plan.length, checkTotal: plan.length});
+      taskManifest.setPhase(filePath, "checking", {worker: worker.id});
+      for (const frame of plan) {
+        signal.throwIfAborted();
+        if (await isValidImage(frame.outputPath)) taskManifest.markFrameComplete(filePath, frame.index);
+        worker.checkedFrames++;
+      }
+      if (Const.ImageOutputByVideo && videoTask.imageLayout !== "video-directory" && videoTask.doneCount === 0) {
+        videoTask.imageLayout = "video-directory";
+        plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, videoImageDirectory(filePath, videoTask));
+        for (const frame of plan) {
+          signal.throwIfAborted();
+          if (await isValidImage(frame.outputPath)) taskManifest.markFrameComplete(filePath, frame.index);
+        }
+      }
+      if (videoTask.frames.every(Boolean)) {
+        worker.stats.skipped++;
+        taskManifest.setPhase(filePath, "completed", {worker: worker.id});
+        logger.log(`⏭ [${worker.id}] ${path.basename(filePath)}: ${plan.length} 张图片全部命中缓存，任务已完成`);
+        onTerminal("completed");
+      } else {
+        worker.stats.extracted++;
+        taskManifest.setPhase(filePath, "queued", {worker: null});
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        worker.stats.cancelled++;
+        taskManifest.setPhase(filePath, "cancelled", {worker: worker.id, error: "已取消"});
+        onTerminal("cancelled");
+      } else {
+        worker.stats.failed++;
+        taskManifest.setPhase(filePath, "failed", {worker: worker.id, error: error.message});
+        logger.error(`❌ [${worker.id}] ${filePath}: ${error.message}`);
+        onTerminal("failed");
+      }
+      throw error;
+    } finally {
+      checked++;
+      worker.stats.processed++;
+      worker.stats.workingSeconds += (performance.now() - startedAt) / 1000;
+      setWorkerPhase(worker, "idle", {pid: undefined});
+      if (checked % 100 === 0 || checked === files.length) logger.log(`任务规划进度 ${checked}/${files.length} 条视频`);
+    }
+  });
+  await runWithWorkerPools(tasks, [{backend: "cpu", concurrency: Const.VideoProbeConcurrency}], signal);
+  return files.filter(filePath => taskManifest.getVideo(filePath)?.phase === "queued");
+}
+
 async function main() {
   const startAt = dayjs().unix();
   let durationCache;
+  let taskManifest;
   let heartbeat;
+  let imagePool;
   const runId = `${dayjs().format("YYYYMMDD-HHmmss")}-${process.pid}`;
   const workerStats = new Map();
   const controller = new AbortController();
-  const onInterrupt = () => { process.exitCode = 130; controller.abort(); };
-  const onTerminate = () => { process.exitCode = 143; controller.abort(); };
+  const onInterrupt = () => {process.exitCode = 130; controller.abort();};
+  const onTerminate = () => {process.exitCode = 143; controller.abort();};
   process.once("SIGINT", onInterrupt);
   process.once("SIGTERM", onTerminate);
+  let completed = 0;
+  let extractionCompleted = 0;
+  let claimed = 0;
+  let failed = 0;
   try {
     Const.validateScreenshotInterval();
     Const.validateVideoConcurrency();
     Const.validateWorkerDiagnostics();
     logger.log(`运行 ${runId}，Node PID ${process.pid}`);
-    // 每个在途子进程各订阅一次取消信号，混合通道总数可能超过默认的 10。
-    setMaxListeners(Math.max(10, Const.VideoConcurrency + Const.CpuVideoConcurrency + Const.IntegratedGpuConcurrency + 2), controller.signal);
+    setMaxListeners(Math.max(10, Const.VideoConcurrency + Const.CpuVideoConcurrency + Const.IntegratedGpuConcurrency + 3), controller.signal);
     const allMp4Files = await getAllVideos(Const.InputVideoDir);
     allMp4Files.sort((a, b) => a.localeCompare(b));
     durationCache = await VideoDurationCache.open(Const.VideoDurationCachePath, {
-      onWarning: (message) => logger.warn(message),
+      onWarning: message => logger.warn(message),
     });
     logger.log(`视频时长缓存: ${durationCache.path}，已载入 ${durationCache.stats.entries} 条，ignore 标记 ${durationCache.stats.ignoredEntries} 条`);
-    // 在重名检查和任务派发前过滤，不探测、解码或检查被忽略的视频。
-    const mp4Files = allMp4Files.filter((filePath) => {
+    const mp4Files = allMp4Files.filter(filePath => {
       if (!durationCache.isIgnored(filePath)) return true;
       logger.log(`⏭ [ignore] ${filePath}: 已配置忽略，跳过视频`);
       return false;
     });
     const ignoredCount = allMp4Files.length - mp4Files.length;
+    taskManifest = await ScreenshotTaskManifest.open(Const.ScreenshotTaskManifestPath, {
+      intervalSeconds: Const.ScreenshotIntervalSeconds, outputDir: Const.OutputImgDir,
+      flushIntervalMs: Const.TaskManifestFlushIntervalSeconds * 1000,
+      onWarning: message => logger.warn(message),
+      onSnapshot: async jsonText => {
+        try {await writeTaskProgressHtml(Const.TaskProgressHtmlPath, jsonText);}
+        catch (error) {logger.warn(`HTML 进度保存失败: ${error.message}`);}
+      },
+    });
+    taskManifest.startRun(allMp4Files, {runId, ignoredUris: allMp4Files.filter(file => durationCache.isIgnored(file))});
+    taskManifest.setRunState("planning");
+    await taskManifest.flush();
+    logger.log(`整体任务 JSON: ${Const.ScreenshotTaskManifestPath}`);
+    logger.log(`HTML 任务进度: ${Const.TaskProgressHtmlPath}`);
+
     if (ignoredCount) logger.log(`ignore 配置：跳过 ${ignoredCount}/${allMp4Files.length} 条视频，剩余 ${mp4Files.length} 条进入任务池`);
     assertUniqueOutputNames(mp4Files);
-    if (!mp4Files.length) {
-      logger.log(allMp4Files.length ? "所有视频均已配置忽略，本次无需提取" : `在 ${Const.InputVideoDir} 及其子目录中未找到任何 .mp4 文件`);
+    const alreadyCompleted = mp4Files.filter(file => taskManifest.getVideo(file)?.completed === true);
+    for (const filePath of alreadyCompleted) logger.log(`⏭ [任务 JSON] ${filePath}: 视频任务 completed=true，直接跳过`);
+    completed += alreadyCompleted.length;
+    extractionCompleted += alreadyCompleted.length;
+    claimed += alreadyCompleted.length;
+    const planningFiles = mp4Files.filter(file => taskManifest.getVideo(file)?.completed !== true);
+
+    if (!planningFiles.length) {
+      taskManifest.setRunState("completed");
+      logger.log(mp4Files.length ? "所有视频任务 completed=true，本次直接跳过，无需检查图片" : allMp4Files.length ? "所有视频均已配置忽略，本次无需提取" : `在 ${Const.InputVideoDir} 及其子目录中未找到任何 .mp4 文件`);
       return;
     }
     await Const.asyncConfirmIt(
-      `共有 ${mp4Files.length} 条视频，每 ${Const.ScreenshotIntervalSeconds} 秒一张；并发配置 NVIDIA ${Const.VideoConcurrency} / CPU ${Const.CpuVideoConcurrency} / AMD 核显 ${Const.IntegratedGpuConcurrency}，CPU 每进程 ${Const.CpuDecodeThreads} 个解码线程`,
+      `本次待规划 ${planningFiles.length} 条视频，任务 JSON 已完成跳过 ${alreadyCompleted.length} 条，每 ${Const.ScreenshotIntervalSeconds} 秒一张；截图 worker NVIDIA ${Const.VideoConcurrency} / CPU ${Const.CpuVideoConcurrency} / AMD 核显 ${Const.IntegratedGpuConcurrency}，CPU 每进程 ${Const.CpuDecodeThreads} 个解码线程；图片整理 worker ${Const.ImageMoveConcurrency}，最多排队 ${Const.ImageMoveQueueCapacity} 条视频`,
     );
     controller.signal.throwIfAborted();
-    const pools = await getWorkerPools(controller.signal);
-    logger.log(`启用通道: ${pools.filter((pool) => pool.concurrency > 0).map((pool) => `${decoderLabels[pool.backend]} × ${pool.concurrency}`).join("，")}`);
-    await fs.mkdir(Const.OutputImgDir, { recursive: true });
-    let completed = 0;
-    let claimed = 0;
+    await fs.mkdir(Const.OutputImgDir, {recursive: true});
     heartbeat = startWorkerHeartbeat({
       workers: workerStats,
-      getQueueStats: () => ({ completed, total: mp4Files.length, queued: mp4Files.length - claimed }),
+      getQueueStats: () => ({
+        completed, total: mp4Files.length, queued: mp4Files.length - claimed, extractionCompleted,
+        imageQueued: imagePool?.stats.queued ?? 0, imageActive: imagePool?.stats.active ?? 0,
+        imageWaitingProducers: imagePool?.stats.waitingProducers ?? 0,
+      }),
       intervalSeconds: Const.WorkerStatusIntervalSeconds,
       stallWarningSeconds: Const.WorkerStallWarningSeconds,
       signal: controller.signal, logger,
       nvidiaMetricsEnabled: Const.NvidiaDiagnosticsEnabled && Const.VideoConcurrency > 0,
     });
-    const tasks = mp4Files.map((filePath) => async (backend, worker) => {
+    logger.log(`开始规划图片任务：读取时长并检查已有图片，${Const.VideoProbeConcurrency} 个规划 worker`);
+    const readyFiles = await prepareScreenshotTasks(planningFiles, durationCache, taskManifest, controller.signal, workerStats, status => {
+      completed++; extractionCompleted++; claimed++;
+      if (status === "failed") failed++;
+    });
+    const summary = taskManifest.snapshot.summary;
+    logger.log(`任务规划完成：${summary.totalImages} 张图片，已完成 ${summary.completedImages} 张，待截图视频 ${readyFiles.length} 条`);
+    await taskManifest.flush();
+    controller.signal.throwIfAborted();
+    if (!readyFiles.length) {
+      taskManifest.setRunState(failed ? "failed" : "completed");
+      if (failed) {process.exitCode = 1; logger.error(`处理结束，${failed} 条视频规划失败`);}
+      else logger.log("所有图片均已存在，整体任务已完成");
+      return;
+    }
+    taskManifest.setRunState("running");
+    const pools = await getWorkerPools(controller.signal);
+    logger.log(`启用截图通道: ${pools.filter(pool => pool.concurrency > 0).map(pool => `${decoderLabels[pool.backend]} × ${pool.concurrency}`).join("，")}`);
+    imagePool = createImageTaskPool({
+      concurrency: Const.ImageMoveConcurrency,
+      capacity: Const.ImageMoveQueueCapacity,
+      signal: controller.signal,
+      onWorkerCreated: worker => workerStats.set(worker.id, worker),
+      onSettled(result, worker, job) {
+        completed++;
+        if (result.status === "rejected" && !controller.signal.aborted) failed++;
+        logger.log(`进度 ${completed}/${mp4Files.length}，总耗时 ${dayjs().unix() - startAt} 秒 | ${formatWorkerStats(worker)}，来源 ${job.sourceWorkerId}，本条 ${((performance.now() - worker.taskStartedAt) / 1000).toFixed(1)} 秒`);
+        logger.log(`阶段耗时 [${worker.id}]: ${Object.entries(worker.stageTimes ?? {}).map(([phase, seconds]) => `${phase}=${seconds.toFixed(1)}s`).join("，")}；目标检查 ${(worker.targetCheckSeconds ?? 0).toFixed(1)}s，重命名 ${(worker.renameSeconds ?? 0).toFixed(1)}s`);
+      },
+    });
+    logger.log(`图片整理任务池: ${Const.ImageMoveConcurrency} 个 worker，等待队列最多 ${Const.ImageMoveQueueCapacity} 条视频`);
+    const tasks = readyFiles.map(filePath => async (backend, worker) => {
       const taskStartedAt = performance.now();
       const stats = worker.stats;
       workerStats.set(worker.id, worker);
       claimed++;
-      Object.assign(worker, { runId, filePath, stageTimes: {}, progress: {}, pid: undefined,
+      Object.assign(worker, {runId, filePath, stageTimes: {}, progress: {}, pid: undefined,
         expectedFrames: undefined, actualFrames: undefined, checkTotal: undefined, checkedFrames: 0, duration: undefined,
-        lastAdvanceAt: undefined, lastProgressAt: undefined, hardwareConfirmed: false, deviceLogged: false, lastStallWarningAt: undefined });
+        lastAdvanceAt: undefined, lastProgressAt: undefined, hardwareConfirmed: false, deviceLogged: false, lastStallWarningAt: undefined});
+      let handedOff = false;
+      let taskFailed = false;
       try {
-        const result = await processFile(filePath, controller.signal, backend, durationCache, worker);
+        const result = await extractFile(filePath, controller.signal, backend, taskManifest, worker, imagePool);
         if (result.skipped) stats.skipped++;
-        else stats.extracted++;
+        else {stats.extracted++; handedOff = true;}
       } catch (error) {
-        if (controller.signal.aborted) stats.cancelled++;
-        else stats.failed++;
-        logger.error(`❌ [${decoderLabels[backend]} | ${worker.id}] ${filePath}: ${error.message}`);
+        taskFailed = true;
+        if (controller.signal.aborted) {
+          stats.cancelled++;
+          taskManifest.setPhase(filePath, "cancelled", {worker: worker.id, error: "已取消"});
+          logger.warn(`⏹ [${decoderLabels[backend]} | ${worker.id}] ${filePath}: 已取消`);
+        } else {
+          stats.failed++;
+          taskManifest.setPhase(filePath, "failed", {worker: worker.id, error: error.message});
+          logger.error(`❌ [${decoderLabels[backend]} | ${worker.id}] ${filePath}: ${error.message}`);
+        }
         throw error;
       } finally {
-        // 只累计当前 worker 实际处理任务的时间，不包含启动、确认或空闲时间。
-        setWorkerPhase(worker, "idle", { pid: undefined });
+        setWorkerPhase(worker, "idle", {pid: undefined});
         const taskSeconds = (performance.now() - taskStartedAt) / 1000;
         stats.workingSeconds += taskSeconds;
         stats.processed++;
-        completed++;
-        logger.log(`进度 ${completed}/${mp4Files.length}，总耗时 ${dayjs().unix() - startAt} 秒 | ${formatWorkerStats(worker)}，本条 ${taskSeconds.toFixed(1)} 秒`);
+        extractionCompleted++;
+        if (!handedOff) {
+          completed++;
+          if (taskFailed && !controller.signal.aborted) failed++;
+        }
+        logger.log(`截图任务进度 ${extractionCompleted}/${mp4Files.length}，最终完成 ${completed}/${mp4Files.length}，总耗时 ${dayjs().unix() - startAt} 秒 | ${formatWorkerStats(worker)}，本条 ${taskSeconds.toFixed(1)} 秒`);
         if (worker.stageTimes.extract !== undefined) {
           logger.log(`阶段耗时 [${worker.id}]: ${Object.entries(worker.stageTimes).map(([phase, seconds]) => `${phase}=${seconds.toFixed(1)}s`).join("，")}`);
         }
       }
     });
-    const results = await runWithWorkerPools(tasks, pools, controller.signal);
-    const failed = results.filter((result) => result?.status === "rejected").length;
+    await runWithWorkerPools(tasks, pools, controller.signal);
+    if (!controller.signal.aborted) logger.log("截图任务已处理完，等待图片整理队列完成...");
+    await imagePool.close();
     if (controller.signal.aborted) {
-      logger.warn("已停止排队并结束本次启动的子进程");
+      taskManifest.setRunState("cancelled");
+      logger.warn("已停止排队并结束本次启动的子进程，图片整理任务和临时文件已清理");
     } else if (failed) {
+      taskManifest.setRunState("failed");
       process.exitCode = 1;
       logger.error(`处理结束，${failed} 条视频失败；修复原因后可重新运行补齐`);
     } else {
-      logger.log("所有视频处理完成！");
+      taskManifest.setRunState("completed");
+      logger.log("所有视频截图和图片整理完成！");
     }
   } catch (error) {
-    logger.error(`主流程出错: ${error.message}`);
+    controller.abort();
+    if (!controller.signal.aborted || ![130, 143].includes(process.exitCode)) logger.error(`主流程出错: ${error.message}`);
     process.exitCode ||= 1;
   } finally {
+    await imagePool?.close();
     await heartbeat?.stop();
     for (const worker of workerStats.values()) {
-      logger.log(`worker 汇总 ${formatWorkerStats(worker)}，FFmpeg 累计 ${worker.stats.ffmpegSeconds.toFixed(1)} 秒，其他处理 ${Math.max(0, worker.stats.workingSeconds - worker.stats.ffmpegSeconds).toFixed(1)} 秒`);
+      if (worker.backend && worker.backend !== "probe") {
+        logger.log(`worker 汇总 ${formatWorkerStats(worker)}，FFmpeg 累计 ${worker.stats.ffmpegSeconds.toFixed(1)} 秒，其他处理 ${Math.max(0, worker.stats.workingSeconds - worker.stats.ffmpegSeconds).toFixed(1)} 秒`);
+      } else {
+        logger.log(`worker 汇总 ${formatWorkerStats(worker)}`);
+      }
     }
     if (durationCache) {
       try {
         await durationCache.close();
-        const { hits, misses } = durationCache.stats;
+        const {hits, misses} = durationCache.stats;
         logger.log(`视频时长缓存: 命中 ${hits} 条，探测 ${misses} 条`);
       } catch (error) {
         logger.error(`视频时长缓存保存失败: ${error.message}`);
         process.exitCode ||= 1;
       }
+    }
+    if (taskManifest) {
+      if (controller.signal.aborted) {
+        for (const filePath of Object.keys(taskManifest.snapshot.videos)) {
+          const video = taskManifest.getVideo(filePath);
+          if (!["completed", "failed", "ignored", "cancelled"].includes(video.phase)) {
+            taskManifest.setPhase(filePath, "cancelled", {error: "本次运行已取消"});
+          }
+        }
+        taskManifest.setRunState([130, 143].includes(process.exitCode) ? "cancelled" : "failed");
+      }
+      try {await taskManifest.close();}
+      catch (error) {logger.error(`任务 JSON 保存失败: ${error.message}`); process.exitCode ||= 1;}
     }
     process.removeListener("SIGINT", onInterrupt);
     process.removeListener("SIGTERM", onTerminate);

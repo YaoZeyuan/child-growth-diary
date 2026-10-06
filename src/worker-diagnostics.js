@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { performance } from "node:perf_hooks";
+import { performance, monitorEventLoopDelay } from "node:perf_hooks";
 import path from "node:path";
 
 const phaseLabels = {
   idle: "等待任务", probe: "读取时长", cachecheck: "检查图片缓存",
   "cache-check": "检查图片缓存", cacheCheck: "检查图片缓存",
-  extract: "提取图片", verify: "校验输出", publish: "发布图片",
+  extract: "提取图片", enqueue: "等待整理队列", verify: "校验输出", publish: "移动图片",
   cleanup: "清理临时文件", finished: "已结束",
 };
 
@@ -69,6 +69,7 @@ export function setWorkerPhase(worker, phase, details = {}) {
 export function formatWorkerHeartbeat(worker, now = performance.now()) {
   const elapsed = Math.max(0, (now - (worker.phaseStartedAt ?? now)) / 1000).toFixed(1);
   const parts = [`[${worker.id}] ${phaseLabels[worker.phase] ?? worker.phase ?? "等待任务"} ${elapsed} 秒`];
+  if (["idle", "finished"].includes(worker.phase)) return parts.join(" | ");
   if (worker.filePath) parts.push(path.basename(worker.filePath.replace(/\\/g, "/")));
   if (worker.pid ?? worker.PID) parts.push(`PID ${worker.pid ?? worker.PID}`);
   const progress = worker.progress ?? {};
@@ -78,7 +79,7 @@ export function formatWorkerHeartbeat(worker, now = performance.now()) {
     if (progress.speed !== undefined) parts.push(`速度 ${progress.speed}`);
     if (worker.lastAdvanceAt !== undefined) parts.push(`距推进 ${Math.max(0, (now - worker.lastAdvanceAt) / 1000).toFixed(1)} 秒`);
   } else if (worker.checkedFrames !== undefined && worker.expectedFrames !== undefined) {
-    parts.push(`${worker.phase === "publish" ? "发布" : "检查"} ${worker.checkedFrames}/${worker.checkTotal ?? worker.expectedFrames}`);
+    parts.push(`${worker.phase === "publish" ? "移动" : "检查"} ${worker.checkedFrames}/${worker.checkTotal ?? worker.expectedFrames}`);
   }
   return parts.join(" | ");
 }
@@ -112,12 +113,17 @@ export function startWorkerHeartbeat({
   const querySignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let stopped = false, pendingQuery, timer;
   let metricsEnabled = nvidiaMetricsEnabled;
+  const eventLoopDelay = monitorEventLoopDelay({resolution: 20});
 
   async function tick() {
     if (stopped || querySignal.aborted) return;
     const now = performance.now();
-    const { completed, total, queued } = getQueueStats();
-    logger.log(`💓 任务池：完成 ${completed}/${total}，排队 ${queued}`);
+    const { completed, total, queued, extractionCompleted, imageQueued, imageActive, imageWaitingProducers } = getQueueStats();
+    if ([extractionCompleted, imageQueued, imageActive, imageWaitingProducers].some(value => value !== undefined)) {
+      logger.log(`💓 任务池：最终完成 ${completed}/${total}，视频排队 ${queued}，截图任务已处理 ${extractionCompleted ?? 0}，待整理 ${imageQueued ?? 0}，整理中 ${imageActive ?? 0}，等待入队 ${imageWaitingProducers ?? 0}`);
+    } else {
+      logger.log(`💓 任务池：完成 ${completed}/${total}，排队 ${queued}`);
+    }
     for (const worker of workers.values()) {
       logger.log(formatWorkerHeartbeat(worker, now));
       const inactiveSeconds = (now - (worker.lastAdvanceAt ?? now)) / 1000;
@@ -127,6 +133,8 @@ export function startWorkerHeartbeat({
         logger.warn(`⚠ [${worker.id}] 已 ${inactiveSeconds.toFixed(1)} 秒未见 FFmpeg 输出推进，请结合阶段、进度和资源状态排查；这不代表已挂死。`);
       }
     }
+    logger.log(`主进程事件循环延迟：最大 ${(eventLoopDelay.max / 1e6).toFixed(1)} ms，P99 ${(eventLoopDelay.percentile(99) / 1e6).toFixed(1)} ms`);
+    eventLoopDelay.reset();
     if (metricsEnabled && !pendingQuery) {
       pendingQuery = Promise.resolve().then(() => queryNvidiaMetrics(querySignal)).then(result => {
         if (!stopped && !querySignal.aborted) {
@@ -145,12 +153,14 @@ export function startWorkerHeartbeat({
   async function stop() {
     stopped = true;
     clearInterval(timer);
+    eventLoopDelay.disable();
     controller.abort();
     signal?.removeEventListener("abort", onAbort);
     await pendingQuery;
   }
   function onAbort() { void stop(); }
   if (Number.isFinite(intervalSeconds) && intervalSeconds > 0 && !signal?.aborted) {
+    eventLoopDelay.enable();
     timer = setInterval(() => { void tick(); }, intervalSeconds * 1000);
     timer.unref();
     signal?.addEventListener("abort", onAbort, { once: true });

@@ -6,7 +6,7 @@
 
 # 公共配置
 
-在 [src/const/index.js](./src/const/index.js) 中统一配置截图间隔、提取通道并发数、时长缓存位置和整理月份。当前配置为：
+在 [src/const/index.js](./src/const/index.js) 中统一配置截图间隔、截图与图片整理 worker 数、整理队列容量、时长缓存位置和整理月份。当前配置为：
 
 ```js
 export const ScreenshotIntervalSeconds = 10; // 截图间隔，单位为秒，必须是正整数
@@ -14,13 +14,21 @@ export const VideoConcurrency = 3; // NVIDIA CUDA worker 数，保留原配置�
 export const CpuVideoConcurrency = 1; // CPU 软件解码 worker 数，0 为关闭
 export const CpuDecodeThreads = 10; // 每个 CPU 提取进程的解码线程数
 export const IntegratedGpuConcurrency = 1; // AMD 核显 D3D11VA 解码并发数，0 为关闭
+export const ImageMoveConcurrency = 2; // 图片整理 worker 数，必须为正整数
+export const ImageMoveQueueCapacity = 10; // 最多等待整理的视频数，必须为正整数
 export const VideoDurationCachePath = path.resolve(BaseDir, "cache", "video-durations.json");
+export const ScreenshotTaskManifestPath = path.resolve(BaseDir, "cache", "screenshot-tasks.json");
+export const TaskProgressHtmlPath = path.resolve(BaseDir, "cache", "screenshot-progress.html");
+export const TaskManifestFlushIntervalSeconds = 5; // JSON / HTML 快照保存间隔
+export const VideoProbeConcurrency = 4; // 规划阶段读取时长、检查缓存的 worker 数
 export const TargetMonth = "202609"; // 整理月份，格式为 YYYYMM
 ```
 
 例如间隔为 `20` 时，61 秒的视频会在第 `0、20、40、60` 秒各生成一张图片。`TargetMonth` 只控制图片和视频整理脚本处理的月份；截图和合成仍处理各自输入目录中的文件。
 
-三个通道的并发数必须为非负整数，`0` 表示关闭，至少启用一个通道；`CpuDecodeThreads` 必须为正整数。当前启用 5 个 worker（NVIDIA 3 个、AMD 核显 1 个、CPU 1 个），最多同时提取 5 个视频，CPU worker 使用 10 个解码线程。所有视频按 URI 排序后进入同一个任务池，每个 worker 完成当前视频后立即认领下一个，处理更快的 worker 会自然领取更多视频。每个视频只分配给一个 worker，使用一个 FFmpeg 进程完成截图；领取顺序按 URI，完成顺序取决于各视频的实际处理时间。
+三个截图通道的并发数必须为非负整数，`0` 表示关闭，至少启用一个通道；`CpuDecodeThreads` 必须为正整数。当前截图池启用 5 个 worker（NVIDIA 3 个、AMD 核显 1 个、CPU 1 个），最多同时提取 5 个视频，CPU worker 使用 10 个解码线程。所有视频按 URI 排序后进入共享截图任务池，每个视频只分配给一个 worker，使用一个 FFmpeg 进程完成截图；领取顺序按 URI，完成顺序取决于实际处理时间。
+
+另一个异步任务池负责图片整理，由 `ImageMoveConcurrency` 控制 worker 数，当前为 `image-worker-1`、`image-worker-2`。截图 worker 在 FFmpeg 完成后将临时图片移交整理池，立即领取下一个视频；整理 worker 独立校验输出、只将缺失或过小的图片移动为正式文件名，并清理临时目录。`ImageMoveQueueCapacity` 限制等待整理的视频数，当前最多排队 10 个；队列满时截图 worker 等待空位再移交和领取下一条，以限制临时文件积压。这两个配置都必须为正整数。
 
 AMD 核显通道需要 Windows 能枚举到核显并安装相应驱动。将 `IntegratedGpuConcurrency` 设为大于 `0` 时，脚本会在启动时按 AMD 厂商 ID `0x1002` 初始化 D3D11VA 设备；不可用则提示并禁用本次核显通道。此通道不会选用 NVIDIA 设备，也不会自动改为 CPU 解码。本机已完成核显真实视频提取验证，默认启用 `1` 个并发；其他机器可设为 `0` 关闭或按实际样本调整。
 
@@ -49,7 +57,33 @@ URI 使用完整文件路径，匹配时统一转换为绝对路径并将分隔�
 
 按同一 URI 的视频内容固定的约定复用时长；如果替换了同一路径的视频，请删除 `duration` 下对应的缓存键，下一次运行会重新探测。视频移动到新 URI 后也会首次探测。
 
-截图缓存按完整的预计输出文件名匹配，其中包含间隔标记：相同间隔下已有的有效图片（普通文件且大于 100 字节）保留，不同间隔不会误命中。全部图片命中缓存时，不启动 FFmpeg；时长也命中缓存时，无需调用 FFprobe。部分缺失时，一个 FFmpeg 进程重新抽取该视频到临时目录，检查成功后只补入缺失或过小的图片，不覆盖有效缓存。临时图片不带间隔标记，不会参与合成。
+截图缓存按完整的预计输出文件名匹配，其中包含间隔标记：相同间隔下已有的有效图片（普通文件且大小大于 0）保留，不同间隔不会误命中。任务 JSON 中已完成的视频直接跳过；未完成的视频在规划阶段检查图片，全部命中缓存时标记任务完成，不启动 FFmpeg，也不创建图片整理任务；时长也命中缓存时，无需调用 FFprobe。部分缺失时，一个 FFmpeg 进程重新抽取该视频到临时目录，再由图片整理 worker 校验并补入缺失或过小的图片，不覆盖有效缓存。临时图片不带间隔标记，不会参与合成。命令会等待截图池和整理池全部结束再退出；应等待 `pnpm m1` 成功结束后再开始合成。
+
+# 整体任务 JSON 与本地进度页
+
+`pnpm m1` 以视频为任务单元，将整体任务保存到 `cache/screenshot-tasks.json`。每个视频的 `frames` 是按序号排列的图片状态数组：`false` 表示 🕛 待完成，`true` 表示 ✅ 已完成。图片的正式文件名由视频名、序号和截图间隔推导，避免在大任务中重复保存每张图片的完整路径。
+
+`completed: true` 表示该视频所需图片都已位于正式输出位置，整个视频任务完成。再次运行时，相同 URI、截图间隔和输出目录下，直接信任该标记，跳过时长读取、图片检查和 FFmpeg。修改间隔或输出目录时重新建立状态。对于尚未完成的视频，先读取缓存时长或调用 FFprobe，计算待生成的图片列表，检查文件是否存在且大小大于 0，再将需要补图的视频按 URI 顺序交给截图池。
+
+例如每 20 秒截图、时长 61 秒时，视频任务包含四张图：
+
+```json
+{
+  "duration": 61,
+  "frames": [true, true, false, false],
+  "doneCount": 2,
+  "completed": false,
+  "phase": "queued",
+  "worker": null,
+  "error": null
+}
+```
+
+三类截图 worker 生成临时图片后交给整理池；整理 worker 校验并移动图片到正式位置后，逐张将状态更新为 `true`，全部图片完成且清理成功后标记视频 `completed: true`。失败和中断的视频保留未完成状态与错误，下一次运行会检查已有图片并补齐。日志中的最终处理计数包含已结束的失败/取消任务；HTML 的完成图片数和完成视频数只统计真正完成的内容。
+
+JSON 与 `cache/screenshot-progress.html` 默认每 5 秒批量保存一次，正常结束或中断时保存最后状态。直接用浏览器打开 HTML 即可查看整体进度条、视频阶段、worker、错误信息，并按 URI 搜索或筛选；每页最多 50 个视频，图片状态按 24 张分页展开。HTML 内嵌与 JSON 完全相同的快照，刷新或启用运行中每 5 秒自动刷新即可读取最新保存的进度，不需要启动本地服务。
+
+如果手动删除了已完成任务的图片并希望补齐，将对应视频的 `completed` 改为 `false`，或删除 `screenshot-tasks.json` 后重新运行。已完成标记不会自动检查图片是否后来被删除。`video-durations.json` 仍单独保存时长和 `ignore` 配置；忽略的视频也展示在任务清单中，但不会进入处理队列。
 
 # 操作步骤
 
@@ -201,15 +235,15 @@ pnpm s3 --person-json "detection-results/person-images.json"
 
 ## 视频转图片方法
 
-在 Windows 下通过 Node.js 调用 FFmpeg 实现，脚本见 [monitor-video-2-img](./src/monitor-video-2-img.js)。当前由 3 个 NVIDIA CUDA worker、1 个 AMD 核显 D3D11VA worker 和 1 个 CPU 软件解码 worker 从共享任务池中动态领取视频。每个 worker 独立处理，完成后立即领取下一条任务，无需等待其他 worker 完成当前视频。每个视频由一个 FFmpeg 进程连续解码和输出截图；硬件解码通道先在 GPU 帧上按时间筛选，再将选中的帧传回 CPU 编码 JPEG，CPU 通道直接使用软件解码的帧。各通道的截图时间点、文件名和缓存规则相同。目标时间没有对应帧时使用紧邻之前的帧，不足一个间隔的视频仍输出首张。
+在 Windows 下通过 Node.js 调用 FFmpeg 实现，脚本见 [monitor-video-2-img](./src/monitor-video-2-img.js)。当前由 3 个 NVIDIA CUDA worker、1 个 AMD 核显 D3D11VA worker 和 1 个 CPU 软件解码 worker 从共享截图任务池中动态领取视频，另有 2 个图片整理 worker 从有容量上限的整理队列领取任务。两个任务池异步运行，截图 worker 完成 FFmpeg 并将临时输出入队后领取下一条视频；整理 worker 负责校验、移动为正式图片名和清理。队列已满时截图 worker 等待空位。每个视频由一个 FFmpeg 进程连续解码和输出截图；硬件解码通道先在 GPU 帧上按时间筛选，再将选中的帧传回 CPU 编码 JPEG，CPU 通道直接使用软件解码的帧。各通道的截图时间点、文件名和缓存规则相同。目标时间没有对应帧时使用紧邻之前的帧，不足一个间隔的视频仍输出首张。
 
 每个进程的 JPEG 编码和滤镜线程均限制为 1，CPU 软件解码线程数由 `CpuDecodeThreads` 控制；日志按视频汇总并标明通道和独立 worker 编号。各通道并发数可在公共配置中分别调节。增加 CPU 或核显通道不保证总耗时更短，实际吞吐还受视频编码、CPU、内存传输和磁盘影响，应使用相同视频样本比较总耗时后调节，不以 GPU 占用达到 100% 为目标。
 
-每个 worker 使用固定编号，如 `nvidia-worker-1`、`nvidia-worker-2`、`nvidia-worker-3`、`amd-worker-1` 和 `cpu-worker-1`，编号数量由公共配置决定。开始、成功、缓存跳过和失败日志都包含编号；每条任务结束时的进度显示全局进度与总耗时，以及该 worker 本次运行累计处理的视频数、提取成功数、缓存跳过数、失败数、中断数、累计工作秒数和本条任务秒数。累计工作时间包括该 worker 的时长查询、缓存检查、解码提取和临时目录清理，按每条任务累加，不包括启动、等待确认或空闲时间。结束或中断时再输出各 worker 汇总；这些统计每次启动重新计数。
+每个 worker 使用固定编号，如 `nvidia-worker-1`、`nvidia-worker-2`、`nvidia-worker-3`、`amd-worker-1`、`cpu-worker-1`、`image-worker-1` 和 `image-worker-2`，编号数量由公共配置决定。开始、截图完成、缓存跳过、整理成功和失败日志都包含对应编号。GPU/CPU worker 的“提取”或“截图完成”表示 FFmpeg 已完成且输出已移交整理池，最终成功要等图片整理完成；全部缓存命中则直接算最终完成。
 
-```text
-进度 8088/13986，总耗时 777 秒 | [nvidia-worker-2] 累计处理 1620 个视频（提取 35、缓存跳过 1585、失败 0、中断 0），累计工作 756.4 秒，本条 8.1 秒
-```
+日志分别显示全局最终完成数、截图任务进度、待截图视频数、待整理任务数和整理中的任务数，并记录对应 worker 本次运行累计处理数、成功数、缓存跳过数、失败数、中断数、累计工作秒数和本条任务秒数。时长查询与缓存检查由 probe-worker-N 规划 worker 单独统计；截图 worker 的累计时间包括 FFmpeg 和等待整理队列空位的时间；整理 worker 独立累计输出校验、移动图片和清理的任务数与耗时，不计启动、等待确认或空闲时间。结束或中断时输出两个池的 worker 汇总；统计每次启动重新计数。
+
+观察截图与整理进度时，可先看 `nvidia-worker-N` 是否仍在提取，再看 `image-worker-N` 是否在移动图片；截图任务完成数可能暂时高于最终完成数，差额对应待整理或整理中的视频。
 
 排查长时间运行后的 GPU 空闲，可在公共配置中设置诊断日志：
 
@@ -220,16 +254,24 @@ export const FfmpegProgressIntervalSeconds = 5; // FFmpeg 输出进度的间隔
 export const NvidiaDiagnosticsEnabled = true; // 使用 nvidia-smi 读取 NVIDIA 状态
 ```
 
-心跳会列出各 worker 当前视频、阶段（时长探测、检查缓存、提取、检查输出、发布、清理、空闲或已结束）、FFmpeg PID、已输出图片数与预计图片数、输出时间、处理速度 `speed`、最近一次输出推进距今的秒数，以及任务池剩余数量。根据阶段可区分 worker 在解码、操作图片，还是已完成分配到的工作。提取阶段超过 `WorkerStallWarningSeconds` 未推进时打印警告；这表示需要检查当前任务，不代表已确定 GPU 故障，也不会自动杀死 FFmpeg。
+心跳会分别显示最终完成、截图任务、待截图视频、待整理和整理中的数量，并列出各 worker 当前视频与阶段。规划 worker 的阶段包括时长探测、检查缓存；截图 worker 的阶段包括提取、等待入队、空闲或已结束；整理 worker 的阶段包括检查输出、移动图片、清理、空闲或已结束。截图 worker 同时显示 FFmpeg PID、已输出图片数与预计图片数、输出时间、处理速度 `speed`、最近一次输出推进距今的秒数。整理 worker 使用独立编号、累计计数和耗时，可据此判断 GPU 正在解码、等待整理队列空位，还是截图池已经结束而整理池仍在处理。提取阶段超过 `WorkerStallWarningSeconds` 未推进时打印警告；这表示需要检查当前任务，不代表已确定 GPU 故障，也不会自动杀死 FFmpeg。
 
-每个视频启动 FFmpeg 时记录命令和 PID，并读取进度管道。FFmpeg 的详细日志会保留 CUDA 或 D3D11 硬件帧的证据行；结束时记录退出码、信号、FFmpeg 进程耗时（包含解码、滤镜、JPEG 编码与输出）和产生图片数。FFmpeg 进程耗时与任务总耗时分别显示，后者还包括时长探测、缓存检查、输出验证、发布和清理。FFmpeg 出错或输出图片不足时，将有长度上限的 stderr 开头和结尾写到 `log/ffmpeg-diagnostics/` 下包含 worker 编号和唯一标记的日志文件中，错误提示包含文件路径，可结合命令、PID 和进度定位对应视频。
+每个视频启动 FFmpeg 时记录命令和 PID，并读取进度管道。FFmpeg 的详细日志会保留 CUDA 或 D3D11 硬件帧的证据行；结束时记录退出码、信号、FFmpeg 进程耗时（包含解码、滤镜、JPEG 编码与输出）和产生图片数。FFmpeg 进程耗时与截图任务总耗时分别显示，后者还包括等待整理队列空位的时间；时长探测与缓存检查由规划 worker 单独计时；输出验证、移动图片和清理由整理 worker 单独计时。FFmpeg 出错或输出图片不足时，将有长度上限的 stderr 开头和结尾写到 `log/ffmpeg-diagnostics/` 下包含 worker 编号和唯一标记的日志文件中，错误提示包含文件路径，可结合命令、PID 和进度定位对应视频。
 
 启用 `NvidiaDiagnosticsEnabled` 后，脚本还会只读查询 NVIDIA 的 GPU 使用率、解码器使用率、显存和性能状态 `pstate`。查询命令不可用或失败时警告一次并禁用本次 NVIDIA 查询，worker 心跳仍继续输出。硬件视频解码主要使用 NVDEC，不能只凭任务管理器的 3D 曲线判断是否正在解码；应同时观察 Video Decode、解码器使用率、FFmpeg 的硬件帧证据及输出进度。[NVIDIA nvidia-smi 文档](https://docs.nvidia.com/deploy/nvidia-smi/index.html)、[FFmpeg 进度参数文档](https://ffmpeg.org/ffmpeg.html)说明相关指标和参数。
 
-全量截图缓存命中时，worker 不会启动 FFmpeg；缓存检查、图片发布、清理阶段，以及任务池末尾只剩其他通道仍在处理时，也可能出现 NVIDIA 空闲。因此应先查看每个 NVIDIA worker 的当前阶段、PID 和是否持续输出，再判断是正常空闲还是某个任务停滞。新诊断日志在下一次启动 `pnpm m1` 时生效；现有运行不会自动加载修改后的配置。
+全量截图缓存命中时，worker 不会启动 FFmpeg；缓存检查、等待整理队列空位，以及任务池末尾只剩其他截图通道或整理池仍在处理时，也可能出现 NVIDIA 空闲。图片移动和清理由独立整理池处理。因此应先查看每个 NVIDIA worker 的当前阶段、PID 和是否持续输出，再判断是正常空闲还是某个任务停滞。新诊断日志在下一次启动 `pnpm m1` 时生效；现有运行不会自动加载修改后的配置。
+
+以下历史实测均使用拆分图片整理任务池之前的实现，不能直接代表当前两个任务池的吞吐。
 
 本机 Ryzen 7 5800H + RTX 3060 Laptop 之前使用 NVIDIA 3 路配置的一次小样本测试：24 段同源约 20 秒的 2960×1666 HEVC 视频，NVIDIA 3 路约 13.49 秒；加 CPU 5 路、每路 1 线程约 14.65 秒，加 CPU 6 路约 15.67 秒；CPU 5/6 路、每路 2 线程约 18.38/17.29 秒。这些是以前配置的测试结果，当前配置为 NVIDIA 3 路、核显 1 路、CPU 1 路，CPU 每路 10 个解码线程，可针对自己的长视频批次重新对比。
 
 开启混合显卡并重启后，AMD Radeon 核显已通过实际 HEVC Main / 8-bit 监控视频提取验证：约 61 秒视频每 10 秒生成 7 张图片，与 CPU 参考截图逐像素一致。另一组 24 段同源约 61 秒的视频，每组输出 168 张图片，NVIDIA 3 路耗时 32.81 秒，NVIDIA 3 路 + 核显 1 路耗时 30.39 秒，NVIDIA 3 路 + 核显 2 路耗时 43.94 秒；因此核显默认使用 1 路。这组样本耗时降低约 7%，不代表所有批次的提升幅度。混合通道缓存复用也已验证；其他视频编码和格式仍需实际验证兼容性。
 
-单个视频失败会记录错误，其他视频继续处理，最终命令返回失败状态；失败视频不会自动转给 CPU，以免超出配置的 CPU 并发上限。不同输入目录出现相同视频名时会在启动前报错，避免写入同名图片。正常结束、失败或 Ctrl+C 中断时会清理本次临时目录；已完成的有效截图可以在下次运行时复用。
+单个视频截图或整理失败会记录错误，其他视频继续处理，最终命令返回失败状态；截图失败的视频不会自动转给 CPU，以免超出配置的 CPU 并发上限。不同输入目录出现相同视频名时会在启动前报错，避免写入同名图片。正常结束时等待两个任务池完成并清理本次临时目录，再退出；截图日志显示完成后仍可能有整理工作，需等命令成功退出后再合成。
+
+按 Ctrl+C 会停止领取新的截图任务，取消排队和在途的整理任务，并清理本次临时目录。已移动到正式文件名且有效的图片会保留，下一次运行可命中缓存并补齐剩余图片。时长 JSON 缓存和 `ignore` 的规则保持不变。
+
+### 减少图片移动等待
+
+`src/const/index.js` 的 `ImageOutputByVideo = true` 让新视频的图片保存到 `output/<视频名>_step_by_10s/`。整理 worker 在小目录内命名，再一次移动整个目录；已有平铺缓存继续使用原位置。视频合成递归读取这些目录，图片命名和间隔过滤保持一致，临时 `.frames-*` 目录不参与合成。已完成任务仍直接跳过；未完成的视频目录可以补齐。`pnpm o2` 继续整理原有平铺图片，新视频目录无需逐张整理。日志新增“整目录发布”和目录移动耗时。修改代码后需正常结束当前运行，再重新执行 `pnpm m1` 生效。

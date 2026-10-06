@@ -13,3 +13,9 @@ log
 models/*.onnx
 models/*.part
 detection-results/
+
+# 截图任务清单与HTML进度快照
+/cache/screenshot-tasks.json
+/cache/screenshot-tasks.json.*.tmp
+/cache/screenshot-progress.html
+/cache/screenshot-progress.html.*.tmp

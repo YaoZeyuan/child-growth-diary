@@ -130,7 +130,7 @@ export async function main(argv = process.argv.slice(2)) {
     const files = fs.readdirSync(dir, { withFileTypes: true });
     for (const file of files) {
       const filePath = path.join(dir, file.name);
-      if (file.isDirectory()) {
+      if (file.isDirectory() && !file.name.startsWith(".frames-")) {
         // 文件夹，递归向下
         getAllImages(filePath, fileList);
       } else if (
