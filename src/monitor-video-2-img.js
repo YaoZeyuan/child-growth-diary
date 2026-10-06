@@ -6,6 +6,7 @@ import path from "path";
 import dayjs from "dayjs";
 import * as Const from "./const/index.js";
 import { logger } from "./util/logger.js";
+import { VideoDurationCache } from "./video-duration-cache.js";
 
 const ffmpegBinDir = path.resolve(Const.BaseDir, "src", "ffmpeg", "bin");
 const ffmpegPath = path.join(ffmpegBinDir, "ffmpeg.exe");
@@ -122,10 +123,11 @@ export function buildExtractionArgs(filePath, tempDir, interval, frameCount, bac
 }
 
 // 全部命中不启动 FFmpeg；部分命中时一次解码，在临时目录生成后仅发布缺失图片。
-async function processFile(filePath, signal, backend) {
+async function processFile(filePath, signal, backend, durationCache) {
   const fileName = path.basename(filePath);
   const label = decoderLabels[backend];
-  const duration = await getVideoDuration(filePath, signal);
+  signal.throwIfAborted();
+  const duration = await durationCache.getDuration(filePath, (videoPath) => getVideoDuration(videoPath, signal));
   const plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, Const.OutputImgDir);
   const missing = [];
   for (const frame of plan) {
@@ -240,6 +242,7 @@ export function assertUniqueOutputNames(files) {
 
 async function main() {
   const startAt = dayjs().unix();
+  let durationCache;
   const controller = new AbortController();
   const onInterrupt = () => { process.exitCode = 130; controller.abort(); };
   const onTerminate = () => { process.exitCode = 143; controller.abort(); };
@@ -263,11 +266,15 @@ async function main() {
     controller.signal.throwIfAborted();
     const pools = await getWorkerPools(controller.signal);
     logger.log(`启用通道: ${pools.filter((pool) => pool.concurrency > 0).map((pool) => `${decoderLabels[pool.backend]} × ${pool.concurrency}`).join("，")}`);
+    durationCache = await VideoDurationCache.open(Const.VideoDurationCachePath, {
+      onWarning: (message) => logger.warn(message),
+    });
+    logger.log(`视频时长缓存: ${durationCache.path}，已载入 ${durationCache.stats.entries} 条`);
     await fs.mkdir(Const.OutputImgDir, { recursive: true });
     let completed = 0;
     const tasks = mp4Files.map((filePath) => async (backend) => {
       try {
-        await processFile(filePath, controller.signal, backend);
+        await processFile(filePath, controller.signal, backend, durationCache);
       } catch (error) {
         logger.error(`❌ [${decoderLabels[backend]}] ${filePath}: ${error.message}`);
         throw error;
@@ -290,6 +297,16 @@ async function main() {
     logger.error(`主流程出错: ${error.message}`);
     process.exitCode ||= 1;
   } finally {
+    if (durationCache) {
+      try {
+        await durationCache.close();
+        const { hits, misses } = durationCache.stats;
+        logger.log(`视频时长缓存: 命中 ${hits} 条，探测 ${misses} 条`);
+      } catch (error) {
+        logger.error(`视频时长缓存保存失败: ${error.message}`);
+        process.exitCode ||= 1;
+      }
+    }
     process.removeListener("SIGINT", onInterrupt);
     process.removeListener("SIGTERM", onTerminate);
     logger.log(`执行完毕，总耗时 ${dayjs().unix() - startAt} 秒`);

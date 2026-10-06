@@ -13,6 +13,8 @@ export const BaseDir = path.resolve(__dirname, "..", "..");
 export const InputVideoDir = path.resolve(BaseDir, "input");
 export const BackupVideoDir = path.resolve(BaseDir, "backup");
 export const OutputImgDir = path.resolve(BaseDir, "output");
+// 视频 URI 对应的时长（秒），跨运行复用，不依赖截图间隔或整理月份。
+export const VideoDurationCachePath = path.resolve(BaseDir, "cache", "video-durations.json");
 
 // 截图间隔（秒）：写入图片名的 step_by_Ns 标记，合成时只选取匹配此间隔的图片。
 export const ScreenshotIntervalSeconds = 10;

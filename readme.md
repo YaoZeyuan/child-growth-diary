@@ -6,20 +6,21 @@
 
 # 公共配置
 
-在 [src/const/index.js](./src/const/index.js) 中统一配置截图间隔、提取通道并发数和整理月份，例如：
+在 [src/const/index.js](./src/const/index.js) 中统一配置截图间隔、提取通道并发数、时长缓存位置和整理月份。当前配置为：
 
 ```js
-export const ScreenshotIntervalSeconds = 20; // 截图间隔，单位为秒，必须是正整数
-export const VideoConcurrency = 2; // NVIDIA CUDA worker 数，保留原配置名
-export const CpuVideoConcurrency = 3; // CPU 软件解码 worker 数，0 为关闭
-export const CpuDecodeThreads = 1; // 每个 CPU 提取进程的解码线程数
+export const ScreenshotIntervalSeconds = 10; // 截图间隔，单位为秒，必须是正整数
+export const VideoConcurrency = 3; // NVIDIA CUDA worker 数，保留原配置名
+export const CpuVideoConcurrency = 1; // CPU 软件解码 worker 数，0 为关闭
+export const CpuDecodeThreads = 10; // 每个 CPU 提取进程的解码线程数
 export const IntegratedGpuConcurrency = 1; // AMD 核显 D3D11VA 解码并发数，0 为关闭
+export const VideoDurationCachePath = path.resolve(BaseDir, "cache", "video-durations.json");
 export const TargetMonth = "202609"; // 整理月份，格式为 YYYYMM
 ```
 
 例如间隔为 `20` 时，61 秒的视频会在第 `0、20、40、60` 秒各生成一张图片。`TargetMonth` 只控制图片和视频整理脚本处理的月份；截图和合成仍处理各自输入目录中的文件。
 
-三个通道的并发数必须为非负整数，`0` 表示关闭，至少启用一个通道；`CpuDecodeThreads` 必须为正整数。默认启用 6 个 worker（NVIDIA 2 个、AMD 核显 1 个、CPU 3 个），最多同时提取 6 个视频。所有视频按 URI 排序后进入同一个任务池，每个 worker 完成当前视频后立即认领下一个，处理更快的 worker 会自然领取更多视频。每个视频只分配给一个 worker，使用一个 FFmpeg 进程完成截图；领取顺序按 URI，完成顺序取决于各视频的实际处理时间。
+三个通道的并发数必须为非负整数，`0` 表示关闭，至少启用一个通道；`CpuDecodeThreads` 必须为正整数。当前启用 5 个 worker（NVIDIA 3 个、AMD 核显 1 个、CPU 1 个），最多同时提取 5 个视频，CPU worker 使用 10 个解码线程。所有视频按 URI 排序后进入同一个任务池，每个 worker 完成当前视频后立即认领下一个，处理更快的 worker 会自然领取更多视频。每个视频只分配给一个 worker，使用一个 FFmpeg 进程完成截图；领取顺序按 URI，完成顺序取决于各视频的实际处理时间。
 
 AMD 核显通道需要 Windows 能枚举到核显并安装相应驱动。将 `IntegratedGpuConcurrency` 设为大于 `0` 时，脚本会在启动时按 AMD 厂商 ID `0x1002` 初始化 D3D11VA 设备；不可用则提示并禁用本次核显通道。此通道不会选用 NVIDIA 设备，也不会自动改为 CPU 解码。本机已完成核显真实视频提取验证，默认启用 `1` 个并发；其他机器可设为 `0` 关闭或按实际样本调整。
 
@@ -27,7 +28,19 @@ AMD 核显通道需要 Windows 能枚举到核显并安装相应驱动。将 `In
 
 合成会递归查找 `output` 及其子目录，只纳入文件名以当前配置对应的完整 `_step_by_${ScreenshotIntervalSeconds}s.jpg` 后缀结尾的图片（扩展名大小写不限）。例如设置为 `10` 时，只匹配 `_step_by_10s.jpg`，不会匹配 `20`、`100` 或 `110` 秒间隔，也不会匹配没有间隔标记的旧图片。无需移动其他间隔的图片；没有匹配图片时会提示并退出。匹配间隔但命名不合法的图片会警告并跳过。
 
-截图缓存按完整的预计输出文件名匹配，其中包含间隔标记：相同间隔下已有的有效图片（普通文件且大于 100 字节）保留，不同间隔不会误命中。全部图片命中缓存时，仅探测视频时长，不启动 FFmpeg；部分缺失时，一个 FFmpeg 进程重新抽取该视频到临时目录，检查成功后只补入缺失或过小的图片，不覆盖有效缓存。临时图片不带间隔标记，不会参与合成。
+视频时长缓存默认保存在 `cache/video-durations.json`，可通过 `VideoDurationCachePath` 修改位置。JSON 以规范化的绝对视频 URI 为键、时长秒数为值，例如：
+
+```json
+{
+  "D:/姚九悦/监控视频/input/20260901/20260901000000_20260901000101.mp4": 61
+}
+```
+
+`pnpm m1` 启动时只读取一次缓存到内存；命中时直接使用秒数，不检查视频文件大小或修改时间，也不调用 FFprobe。仅缺失或无效记录才探测时长，成功后加入缓存；新记录约每秒批量串行保存一次，先写临时文件再原子替换，并在正常结束或 Ctrl+C 中断时完成最后一次保存。无效的时长值会忽略并重新探测，损坏的 JSON 会提示并重建。缓存不随整理月份或截图间隔变化而失效。
+
+按同一 URI 的视频内容固定的约定复用时长；如果替换了同一路径的视频，请删除对应缓存键或整个缓存文件，下一次运行会重新探测。视频移动到新 URI 后也会首次探测。
+
+截图缓存按完整的预计输出文件名匹配，其中包含间隔标记：相同间隔下已有的有效图片（普通文件且大于 100 字节）保留，不同间隔不会误命中。全部图片命中缓存时，不启动 FFmpeg；时长也命中缓存时，无需调用 FFprobe。部分缺失时，一个 FFmpeg 进程重新抽取该视频到临时目录，检查成功后只补入缺失或过小的图片，不覆盖有效缓存。临时图片不带间隔标记，不会参与合成。
 
 # 操作步骤
 
@@ -179,11 +192,11 @@ pnpm s3 --person-json "detection-results/person-images.json"
 
 ## 视频转图片方法
 
-在 Windows 下通过 Node.js 调用 FFmpeg 实现，脚本见 [monitor-video-2-img](./src/monitor-video-2-img.js)。默认由 2 个 NVIDIA CUDA worker、1 个 AMD 核显 D3D11VA worker 和 3 个 CPU 软件解码 worker 从共享任务池中动态领取视频。每个 worker 独立处理，完成后立即领取下一条任务，无需等待其他 worker 完成当前视频。每个视频由一个 FFmpeg 进程连续解码和输出截图；硬件解码通道先在 GPU 帧上按时间筛选，再将选中的帧传回 CPU 编码 JPEG，CPU 通道直接使用软件解码的帧。各通道的截图时间点、文件名和缓存规则相同。目标时间没有对应帧时使用紧邻之前的帧，不足一个间隔的视频仍输出首张。
+在 Windows 下通过 Node.js 调用 FFmpeg 实现，脚本见 [monitor-video-2-img](./src/monitor-video-2-img.js)。当前由 3 个 NVIDIA CUDA worker、1 个 AMD 核显 D3D11VA worker 和 1 个 CPU 软件解码 worker 从共享任务池中动态领取视频。每个 worker 独立处理，完成后立即领取下一条任务，无需等待其他 worker 完成当前视频。每个视频由一个 FFmpeg 进程连续解码和输出截图；硬件解码通道先在 GPU 帧上按时间筛选，再将选中的帧传回 CPU 编码 JPEG，CPU 通道直接使用软件解码的帧。各通道的截图时间点、文件名和缓存规则相同。目标时间没有对应帧时使用紧邻之前的帧，不足一个间隔的视频仍输出首张。
 
 每个进程的 JPEG 编码和滤镜线程均限制为 1，CPU 软件解码线程数由 `CpuDecodeThreads` 控制；日志按视频汇总并标明通道。各通道并发数可在公共配置中分别调节。增加 CPU 或核显通道不保证总耗时更短，实际吞吐还受视频编码、CPU、内存传输和磁盘影响，应使用相同视频样本比较总耗时后调节，不以 GPU 占用达到 100% 为目标。
 
-本机 Ryzen 7 5800H + RTX 3060 Laptop 之前使用 NVIDIA 3 路配置的一次小样本测试：24 段同源约 20 秒的 2960×1666 HEVC 视频，NVIDIA 3 路约 13.49 秒；加 CPU 5 路、每路 1 线程约 14.65 秒，加 CPU 6 路约 15.67 秒；CPU 5/6 路、每路 2 线程约 18.38/17.29 秒。这些是以前配置的测试结果，当前默认配置为 NVIDIA 2 路、核显 1 路、CPU 3 路，可针对自己的长视频批次重新对比。
+本机 Ryzen 7 5800H + RTX 3060 Laptop 之前使用 NVIDIA 3 路配置的一次小样本测试：24 段同源约 20 秒的 2960×1666 HEVC 视频，NVIDIA 3 路约 13.49 秒；加 CPU 5 路、每路 1 线程约 14.65 秒，加 CPU 6 路约 15.67 秒；CPU 5/6 路、每路 2 线程约 18.38/17.29 秒。这些是以前配置的测试结果，当前配置为 NVIDIA 3 路、核显 1 路、CPU 1 路，CPU 每路 10 个解码线程，可针对自己的长视频批次重新对比。
 
 开启混合显卡并重启后，AMD Radeon 核显已通过实际 HEVC Main / 8-bit 监控视频提取验证：约 61 秒视频每 10 秒生成 7 张图片，与 CPU 参考截图逐像素一致。另一组 24 段同源约 61 秒的视频，每组输出 168 张图片，NVIDIA 3 路耗时 32.81 秒，NVIDIA 3 路 + 核显 1 路耗时 30.39 秒，NVIDIA 3 路 + 核显 2 路耗时 43.94 秒；因此核显默认使用 1 路。这组样本耗时降低约 7%，不代表所有批次的提升幅度。混合通道缓存复用也已验证；其他视频编码和格式仍需实际验证兼容性。
 

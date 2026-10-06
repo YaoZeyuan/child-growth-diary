@@ -6,6 +6,8 @@ node_modules
 # 临时文件
 images_list_4_ffmpeg_to_generate_video.txt
 log
+/cache/video-durations.json
+/cache/video-durations.json.*.tmp
 
 # 本地模型和检测结果（原图不会被检测脚本修改）
 models/*.onnx
