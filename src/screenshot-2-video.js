@@ -15,23 +15,25 @@ const Output_Dir = Const.OutputImgDir;
 const Base_Dir = Const.BaseDir;
 const ffmpegPath = path.resolve(Base_Dir, "src", "ffmpeg", "bin", "ffmpeg.exe");
 
-const listFilePath = path.resolve(
-  Base_Dir,
-  "images_list_4_ffmpeg_to_generate_video.txt",
-);
 const flag_每日一张图模式 = false;
-// 输出的视频名
-const outputVideo = path.resolve(
-  Base_Dir,
-  `${flag_每日一张图模式 ? "每日一张图" : "小朋友成长记"}_output.mp4`,
-);
+
+export function validateCompositionMonth(month) {
+  if (typeof month !== "string" || !/^\d{6}$/.test(month) || !dayjs(month + "01", "YYYYMMDD", true).isValid()) throw new Error("合成月份必须为有效的 YYYYMM，例如 202609");
+  return month;
+}
+
+export function screenshotMonth(start, index, interval) {
+  return dayjs(start, "YYYYMMDDHHmmss", true).add(index * interval, "second").format("YYYYMM");
+}
 
 export function parseVideoArgs(argv) {
   const options = { personJson: null, dryRun: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "--person-json") {
+    if (arg === "--month") {
+      options.month = validateCompositionMonth(argv[++index]);
+    } else if (arg === "--person-json") {
       const value = argv[++index];
       if (!value || value.startsWith("--")) {
         throw new Error("--person-json 后必须指定 JSON 文件路径");
@@ -51,8 +53,9 @@ export function parseVideoArgs(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const options = parseVideoArgs(argv);
   if (options.help) {
-    console.log(`用法: pnpm s3 [--person-json <JSON路径>] [--dry-run]
+    console.log(`用法: pnpm s3 [--month YYYYMM] [--person-json <JSON路径>] [--dry-run]
 
+  --month YYYYMM        合成月份，默认读取公共配置 TargetMonth
   --person-json <路径>  只合成清单中的图片；JSON 必须为绝对 JPG/JPEG 路径或本地 file URI 的字符串数组
   --dry-run             打印匹配数量及清单来源，不运行 FFmpeg、不改写图片列表或视频
   --help, -h            显示帮助
@@ -61,6 +64,10 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   Const.validateScreenshotInterval();
+  const month = validateCompositionMonth(options.month ?? Const.TargetMonth);
+  const suffix = `${month}_step_by_${Const.ScreenshotIntervalSeconds}s`;
+  const listFilePath = path.resolve(Base_Dir, `images_list_${suffix}.txt`);
+  const outputVideo = path.resolve(Base_Dir, `${flag_每日一张图模式 ? "每日一张图" : "小朋友成长记"}_${suffix}_output.mp4`);
   const intervalTag = `_step_by_${Const.ScreenshotIntervalSeconds}s`;
 
   // ---- 自动选择编码器 ----
@@ -176,6 +183,7 @@ export async function main(argv = process.argv.slice(2)) {
       continue;
     }
     const fileTimeAt = startTime.unix() + fileCount * intervalSeconds;
+    if (screenshotMonth(startTimeStr, fileCount, intervalSeconds) !== month) continue;
     const fileDayStr = dayjs.unix(fileTimeAt).format("YYYY-MM-DD");
     // 录入文件列表中
     imageFileList.push({
@@ -192,7 +200,7 @@ export async function main(argv = process.argv.slice(2)) {
       ? `清单 ${options.personJson}`
       : `${Output_Dir} 及其子目录`;
     logger.warn(
-      `在 ${source} 中未找到匹配 ${intervalTag} 的可合成图片`,
+      `在 ${source} 中未找到 ${month} 月匹配 ${intervalTag} 的可合成图片`,
     );
     if (!options.dryRun) return;
   }
@@ -217,7 +225,7 @@ export async function main(argv = process.argv.slice(2)) {
     : imageFileList;
   if (options.dryRun) {
     logger.log(`JSON 来源: ${options.personJson || "未指定（扫描 output 目录）"}`);
-    logger.log(`匹配 ${intervalTag}，本次将合成 ${selectedImages.length} 张图片`);
+    logger.log(`${month} 月匹配 ${intervalTag}，本次将合成 ${selectedImages.length} 张图片`);
     return;
   }
 
@@ -231,7 +239,7 @@ export async function main(argv = process.argv.slice(2)) {
     .join("\n");
 
   await Const.asyncConfirmIt(
-    `整理完毕，匹配 ${intervalTag}，共需处理${fileContent.split("\n").length}张图片`,
+    `整理完毕，${month} 月匹配 ${intervalTag}，共需处理${fileContent.split("\n").length}张图片`,
   );
   fs.writeFileSync(listFilePath, fileContent);
 

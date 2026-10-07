@@ -86,14 +86,14 @@ test("s3 dry-run 使用清单，仍校验完整间隔后缀和文件名，不改
   const invalidName = f.image(`wrong_name_step_by_${ScreenshotIntervalSeconds}s.jpg`);
   const invalidDate = f.image(`20251319231508_20251219235717_0003_step_by_${ScreenshotIntervalSeconds}s.jpg`);
   const listPath = f.json([good2, good, good, otherInterval, wrongSuffix, invalidName, invalidDate]);
-  const artifacts = ["images_list_4_ffmpeg_to_generate_video.txt", "小朋友成长记_output.mp4"].map((name) => path.join(BaseDir, name));
+  const artifacts = [`images_list_202512_step_by_${ScreenshotIntervalSeconds}s.txt`, `小朋友成长记_202512_step_by_${ScreenshotIntervalSeconds}s_output.mp4`].map((name) => path.join(BaseDir, name));
   const snapshot = () => artifacts.map((file) => {
     if (!fs.existsSync(file)) return null;
     const stat = fs.statSync(file);
     return { size: stat.size, mtimeMs: stat.mtimeMs };
   });
   const before = snapshot();
-  const output = execFileSync(process.execPath, [path.join(BaseDir, "src/screenshot-2-video.js"), "--person-json", listPath, "--dry-run"], { encoding: "utf8" });
+  const output = execFileSync(process.execPath, [path.join(BaseDir, "src/screenshot-2-video.js"), "--month", "202512", "--person-json", listPath, "--dry-run"], { encoding: "utf8" });
   assert.match(output, /本次将合成 2 张图片/);
   assert.ok(output.includes(listPath));
   assert.deepEqual(snapshot(), before);
