@@ -1,3 +1,4 @@
+import {screenshotFrameCount} from './screenshot-frame-count.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -205,7 +206,7 @@ export class ScreenshotTaskManifest {
     }
     const video = this.#requireVideo(uri);
     if (video.phase === "ignored") return video;
-    const frameCount = Math.ceil(duration / this.intervalSeconds);
+    const frameCount = screenshotFrameCount(duration, this.intervalSeconds);
     if (!Number.isSafeInteger(frameCount) || frameCount > 0xffffffff) {
       throw new Error("预计截图数量超出有效范围");
     }

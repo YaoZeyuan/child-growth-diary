@@ -1,3 +1,4 @@
+import {screenshotFrameCount} from './screenshot-frame-count.js';
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { setMaxListeners } from "node:events";
@@ -137,7 +138,7 @@ async function getVideoDuration(videoPath, signal, worker) {
 
 export function getScreenshotPlan(filePath, duration, interval, outputDir) {
   const baseName = path.basename(filePath, path.extname(filePath));
-  return Array.from({ length: Math.ceil(duration / interval) }, (_, index) => ({
+  return Array.from({ length: screenshotFrameCount(duration, interval) }, (_, index) => ({
     index,
     outputPath: requestedMonth ? calendarImagePath(Const.OutputImgDir, `${baseName}_${String(index).padStart(4, "0")}_step_by_${interval}s.jpg`) : path.join(outputDir, `${baseName}_${String(index).padStart(4, "0")}_step_by_${interval}s.jpg`),
     tempName: `${String(index).padStart(8, "0")}.jpg`,

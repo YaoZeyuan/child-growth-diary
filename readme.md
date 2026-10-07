@@ -329,3 +329,5 @@ pnpm month --month 202603
 任务检测 worker 现在使用独立 Node 子进程，各自读图、预处理和加载模型，IPC 仅传图片路径及检测结果，不传照片数据。主进程负责缓存过滤、领取队列和统一保存 JSON。PersonDetectionConcurrency 控制进程数；日志记录 PID、累计预处理和推理秒数。中断时停止派发，等待在途结果后关闭子进程。
 
 人员检测使用两个进程池：PersonPreprocessConcurrency（默认 3）负责 JPEG 解码、缩放和张量转换；PersonDetectionConcurrency（默认 3）负责模型推理。PersonPreparedQueueCapacity（默认 6）限制正在预处理及等待推理的图片数量，另外每个推理进程最多持有一张。三个配置均在 src/const/index.js。张量通过二进制 IPC 经主进程派发，不写临时图片或张量文件；主进程统一保存结果。日志及 JSON 的 preprocessWorkers 记录预处理进程耗时。修改后重启原检测命令即可，缓存格式与检测规则不变。
+
+合成月份现按视频开始日期（文件名前 6 位）归属，跨午夜/跨月截图仍归视频发起月份。s3 默认 TargetMonth，--month 可覆盖；仅递归扫描 output/YYYY/MM，不扫描其他月份或回退整个 output。--person-json 显式清单也按视频开始月份筛选；实际帧时间仍用于拍摄时间展示。

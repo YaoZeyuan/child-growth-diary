@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {screenshotFrameCount} from '../src/screenshot-frame-count.js';
+test('sampling count tolerates container tail milliseconds and keeps genuine tail samples',()=>{assert.equal(screenshotFrameCount(660.002778,10),66);assert.equal(screenshotFrameCount(660,10),66);assert.equal(screenshotFrameCount(660.1,10),67);assert.equal(screenshotFrameCount(61,20),4);assert.equal(screenshotFrameCount(0.001,20),1);for(const interval of [0,-1,0.5])assert.throws(()=>screenshotFrameCount(61,interval));});

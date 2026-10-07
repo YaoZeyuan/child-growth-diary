@@ -24,7 +24,7 @@ export function validateCompositionMonth(month) {
 }
 
 export function screenshotMonth(start, index, interval) {
-  return dayjs(start, "YYYYMMDDHHmmss", true).add(index * interval, "second").format("YYYYMM");
+  return dayjs(start, "YYYYMMDDHHmmss", true).format("YYYYMM");
 }
 
 export function parseVideoArgs(argv) {
@@ -66,7 +66,7 @@ export async function main(argv = process.argv.slice(2)) {
   --dry-run             打印匹配数量及清单来源，不运行 FFmpeg、不改写图片列表或视频
   --help, -h            显示帮助
 
-未指定 --person-json 时，仍扫描 output 目录。所有模式均保留当前截图间隔及文件名校验。`);
+未指定 --person-json 时，只扫描 output/YYYY/MM 目录；月份按视频开始时间判断。所有模式均保留当前截图间隔及文件名校验。`);
     return;
   }
   Const.validateScreenshotInterval();
@@ -160,12 +160,13 @@ export async function main(argv = process.argv.slice(2)) {
     return fileList;
   }
 
-  // 1. 获取并排序
+  const monthDirectory = path.join(Output_Dir, month.slice(0,4), month.slice(4,6));
+  // 1. 仅从指定月份目录获取图片，不回退全量扫描
   const rawImageFileList = options.personJson
     ? readPersonImageList(options.personJson).filter((item) =>
         path.basename(item, path.extname(item)).endsWith(intervalTag),
       )
-    : getAllImages(Output_Dir);
+    : fs.existsSync(monthDirectory) ? getAllImages(monthDirectory) : [];
   let personTasks;
   if (filterPerson) {
     try {personTasks = JSON.parse(fs.readFileSync(Const.ScreenshotTaskManifestPath, "utf8"));}
@@ -221,7 +222,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (imageFileList.length === 0) {
     const source = options.personJson
       ? `清单 ${options.personJson}`
-      : `${Output_Dir} 及其子目录`;
+      : `${monthDirectory} 及其子目录`;
     logger.warn(
       `在 ${source} 中未找到 ${month} 月匹配 ${intervalTag} 的可合成图片`,
     );
