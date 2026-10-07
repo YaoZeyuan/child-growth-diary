@@ -45,12 +45,15 @@ function formatWorkerStats(worker) {
   return `[${worker.id}] 累计处理 ${processed} 个视频（截图移交 ${extracted}、缓存跳过 ${skipped}、失败 ${failed}、中断 ${cancelled}），累计工作 ${workingSeconds.toFixed(1)} 秒`;
 }
 
-async function getAllVideos(dir, fileList = []) {
+export async function getAllVideos(dir, fileList = [], visited = new Set()) {
+  const realDirectory = await fs.realpath(dir);
+  if (visited.has(realDirectory.toLowerCase())) return fileList;
+  visited.add(realDirectory.toLowerCase());
   const entries = await fs.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const filePath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await getAllVideos(filePath, fileList);
+    if (entry.isDirectory() || (entry.isSymbolicLink() && (await fs.stat(filePath)).isDirectory())) {
+      await getAllVideos(filePath, fileList, visited);
     } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".mp4")) {
       fileList.push(filePath);
     }

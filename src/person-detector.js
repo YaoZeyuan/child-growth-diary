@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import {preferredPersonDevice} from "./person-device.js";
 import os from "node:os";
 import path from "node:path";
 import * as ort from "onnxruntime-node";
@@ -50,10 +51,10 @@ export async function prepareImage(imagePath, inputSize) {
 }
 
 export async function createPersonDetector({
-  modelPath = DEFAULT_MODEL_PATH, provider = "auto", deviceId = 0, confidence = 0.15,
+  modelPath = DEFAULT_MODEL_PATH, provider = "auto", deviceId, confidence = 0.15,
 } = {}) {
   if (!["auto", "cpu", "dml"].includes(provider)) throw new Error("provider 必须为 auto、cpu 或 dml");
-  if (!Number.isInteger(deviceId) || deviceId < 0) throw new Error("deviceId 必须为非负整数");
+  if (deviceId !== undefined && (!Number.isInteger(deviceId) || deviceId < 0)) throw new Error("deviceId 必须为非负整数");
   if (!Number.isFinite(confidence) || confidence <= 0 || confidence > 1) throw new Error("confidence 必须在 (0,1] 之间");
   modelPath = path.resolve(modelPath);
   await fs.access(modelPath).catch(() => { throw new Error(`找不到模型 ${modelPath}，请先执行 pnpm download-person-model`); });
@@ -61,6 +62,11 @@ export async function createPersonDetector({
   if (modelPath === DEFAULT_MODEL_PATH && modelSha256 !== MODEL_SHA256) {
     throw new Error("默认模型 SHA-256 校验失败，请执行 pnpm download-person-model 修复");
   }
+  if (deviceId === undefined && provider !== "cpu" && process.platform === "win32") {
+    const selected = preferredPersonDevice();deviceId = selected.deviceId;
+    console.error(`人员检测选择 DirectML ${deviceId} 号设备：${selected.name}`);
+  }
+  deviceId ??= 0;
   let session;
   let inputSize;
   let selectedProvider;
@@ -110,7 +116,7 @@ export async function createPersonDetector({
 
   let busy = false;
   let closed = false;
-  async function inspect(imagePath) {
+  async function inspect(imagePath, prepared) {
     if (closed) throw new Error("检测器已关闭");
     if (busy) throw new Error("请逐张 await 检测，同一 DirectML 会话不支持并发调用");
     busy = true;
@@ -118,7 +124,7 @@ export async function createPersonDetector({
     let outputs;
     try {
       const start = performance.now();
-      tensor = await prepareImage(imagePath, inputSize);
+      tensor = prepared ? new ort.Tensor("float32", new Float32Array(prepared.buffer.slice(prepared.byteOffset, prepared.byteOffset + prepared.byteLength)), [1,3,inputSize,inputSize]) : await prepareImage(imagePath, inputSize);
       const inferStart = performance.now();
       outputs = await session.run({ [session.inputNames[0]]: tensor });
       const inferenceMs = performance.now() - inferStart;
@@ -132,6 +138,7 @@ export async function createPersonDetector({
   }
   return {
     inspect,
+    async inferPrepared(prepared) { return inspect(undefined, prepared); },
     async detect(imagePath) { return (await inspect(imagePath)).hasPerson; },
     async close() {
       if (busy) throw new Error("请等待当前检测完成后关闭");

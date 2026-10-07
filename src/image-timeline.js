@@ -22,6 +22,6 @@ export async function* walkImages(root, io) {
  for await(const entry of handle){const uri=path.join(dir,entry.name);if(entry.isDirectory()&&!entry.name.startsWith('.'))pending.push(uri);else if(entry.isFile()&&/\.jpe?g$/i.test(entry.name))yield uri;}}
 }
 export function compareImageNames(a,b) {
- const left=imageInfo(a)?.name ?? path.basename(a),right=imageInfo(b)?.name ?? path.basename(b);
+ const left=path.win32.basename(a),right=path.win32.basename(b);
  return left<right?-1:left>right?1:(a<b?-1:a>b?1:0);
 }

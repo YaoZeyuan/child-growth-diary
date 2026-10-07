@@ -53,6 +53,9 @@ export const NvidiaDiagnosticsEnabled = true; // 只读查询 NVIDIA 解码率/�
 // 图片、备份视频整理月份（YYYYMM）。
 export const TargetMonth = "202601";
 
+export const PersonDetectionConcurrency = 3; // 独立推理进程数
+export const PersonPreprocessConcurrency = 6; // 独立预处理进程数
+export const PersonPreparedQueueCapacity = 16; // 预处理在途及待推理图片上限
 export const PersonAbsentRun = 10; // 连续无人触发区间
 export const PersonPresentRun = 3; // 连续有人终止区间，保留这三张
 export const PersonConfidence = 0.15;
@@ -132,7 +135,21 @@ export const asyncConfirmIt = async (tip = "") => {
 };
 
 export function validatePersonConfig() {
-  for (const [name,value] of Object.entries({PersonAbsentRun,PersonPresentRun})) if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为正整数`);
-  if (!Number.isFinite(PersonConfidence) || PersonConfidence <= 0 || PersonConfidence > 1) throw new Error("PersonConfidence 必须在 (0,1] 之间");
-  if (typeof PersonFilterForComposition !== "boolean") throw new Error("PersonFilterForComposition 必须为布尔值");
+  for (const [name, value] of Object.entries({
+    PersonAbsentRun,
+    PersonPresentRun,
+    PersonDetectionConcurrency,
+    PersonPreprocessConcurrency,
+    PersonPreparedQueueCapacity,
+  }))
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new Error(`${name} 必须为正整数`);
+  if (
+    !Number.isFinite(PersonConfidence) ||
+    PersonConfidence <= 0 ||
+    PersonConfidence > 1
+  )
+    throw new Error("PersonConfidence 必须在 (0,1] 之间");
+  if (typeof PersonFilterForComposition !== "boolean")
+    throw new Error("PersonFilterForComposition 必须为布尔值");
 }

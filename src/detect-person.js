@@ -24,7 +24,7 @@ const HELP = `判断图片中是否有人（宝宝或成人均算）。
   --results PATH     --cache 的兼容别名；后续合成请使用 --json 输出的文件
   --confidence N     人体置信度阈值，默认 0.15，范围 (0, 1]
   --provider NAME    推理设备：auto / cpu / dml，默认 auto
-  --device-id N      DirectML 显卡编号，默认 0
+  --device-id N      DirectML 显卡编号，默认优先 NVIDIA，否则 0
   --model PATH       自定义 YOLO26 ONNX 模型路径
   --no-cache         重新检测选中图片，并追加新的结果
   --help, -h         显示帮助
@@ -38,7 +38,7 @@ export function parseArgs(args) {
   const options = {
     input: 'output', results: 'detection-results/person-results.jsonl',
     jsonPath: 'detection-results/person-images.json', htmlPath: 'detection-results/person-review.html', limit: 100,
-    confidence: 0.15, provider: 'auto', deviceId: 0, useCache: true,
+    confidence: 0.15, provider: 'auto', deviceId: undefined, useCache: true,
   };
   const valueFlags = new Map([
     ['--image', 'image'], ['--input', 'input'], ['--results', 'results'],
@@ -73,7 +73,7 @@ export function parseArgs(args) {
   if (!Number.isFinite(options.confidence) || options.confidence <= 0 || options.confidence > 1) {
     throw new Error('--confidence 必须大于 0 且不超过 1。');
   }
-  if (!Number.isSafeInteger(options.deviceId) || options.deviceId < 0) {
+  if (options.deviceId !== undefined && (!Number.isSafeInteger(options.deviceId) || options.deviceId < 0)) {
     throw new Error('--device-id 必须是大于等于 0 的整数。');
   }
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1)) {

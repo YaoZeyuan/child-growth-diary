@@ -319,3 +319,13 @@ pnpm month --month 202603
 ```
 
 只需开始时确认一次，任一步失败停止后续步骤。不指定月份默认 TargetMonth；`--yes` 可省略确认。单步命令仍可独立执行。一键入口不会删除原视频或图片。
+
+人员检测默认通过 DXGI 枚举显卡，优先选择 NVIDIA 厂商设备；不存在时选 DirectML 0 号。启动日志显示设备名称和编号。单图/普通批量模式可用 --device-id 显式覆盖，CPU 模式不枚举显卡。此选择使用 DirectML，不要求安装 CUDA 推理环境。
+
+任务人员检测默认使用 3 个独立模型会话 worker（公共配置 PersonDetectionConcurrency），共享月份图片队列，完成后自动领取下一张。各 worker 默认优先 NVIDIA；同一会话仍逐张推理。主流程统一写任务 JSON，区间按文件名顺序计算，不按并发完成顺序。进度包含 person-worker-1/2/3 的累计处理、推理、缓存、错误和工作秒数。中断会等待当前推理结束并保存结果，再次运行复用检测结果。
+
+任务人员检测会先扫描指定月份图片，一次性统计并过滤已有 person 布尔结果的图片，仅将未检测图片交给 worker。缓存命中不逐张保存进度；处理新图片时按时间间隔保存，结束时统一保存。启动仍需读取任务 JSON、扫描月份目录和初始化模型。
+
+任务检测 worker 现在使用独立 Node 子进程，各自读图、预处理和加载模型，IPC 仅传图片路径及检测结果，不传照片数据。主进程负责缓存过滤、领取队列和统一保存 JSON。PersonDetectionConcurrency 控制进程数；日志记录 PID、累计预处理和推理秒数。中断时停止派发，等待在途结果后关闭子进程。
+
+人员检测使用两个进程池：PersonPreprocessConcurrency（默认 3）负责 JPEG 解码、缩放和张量转换；PersonDetectionConcurrency（默认 3）负责模型推理。PersonPreparedQueueCapacity（默认 6）限制正在预处理及等待推理的图片数量，另外每个推理进程最多持有一张。三个配置均在 src/const/index.js。张量通过二进制 IPC 经主进程派发，不写临时图片或张量文件；主进程统一保存结果。日志及 JSON 的 preprocessWorkers 记录预处理进程耗时。修改后重启原检测命令即可，缓存格式与检测规则不变。

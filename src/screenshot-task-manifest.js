@@ -156,7 +156,7 @@ export class ScreenshotTaskManifest {
     const reuseCompleted = this.#data.screenshotIntervalSeconds === this.intervalSeconds
       && normalizeVideoUri(this.#data.outputDirectory) === normalizeVideoUri(this.outputDir);
     const previousVideos = this.#data.videos;
-    const videos = {};
+    const videos = reuseCompleted ? {...previousVideos} : {};
     for (const videoPath of videoPaths) {
       const uri = normalizeVideoUri(videoPath);
       const previous = previousVideos[uri];
