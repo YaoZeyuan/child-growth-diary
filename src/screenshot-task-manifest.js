@@ -10,13 +10,13 @@ function isRecord(value) {
 function emptySummary() {
   return {
     totalVideos: 0, ignoredVideos: 0, plannedVideos: 0, completedVideos: 0,
-    totalImages: 0, completedImages: 0, pendingImages: 0, failedVideos: 0, cancelledVideos: 0,
+    totalImages: 0, completedImages: 0, skippedImages: 0, detectedImages: 0, pendingImages: 0, failedVideos: 0, cancelledVideos: 0,
   };
 }
 
 function hasCompletePlan(video) {
   return typeof video.duration === "number" && Number.isFinite(video.duration) && video.duration > 0
-    && video.frames.length > 0 && video.doneCount === video.frames.length;
+    && video.frames.length > 0 && video.doneCount + (video.skippedCount ?? 0) === video.frames.length;
 }
 
 function validSavedManifest(value) {
@@ -74,12 +74,36 @@ export class ScreenshotTaskManifest {
     try {
       const saved = JSON.parse(contents);
       if (!validSavedManifest(saved)) throw new Error("任务文件格式无效或版本不受支持");
+      let relocated = false;
+      const oldProjectRoot = path.dirname(saved.outputDirectory);
+      const newProjectRoot = path.dirname(manifest.outputDir);
+      if (normalizeVideoUri(oldProjectRoot) !== normalizeVideoUri(newProjectRoot)) {
+        let oldMissing = false;
+        try {await fs.access(oldProjectRoot);} catch (error) {if(error.code === "ENOENT") oldMissing = true;}
+        if (oldMissing) {
+          try {
+            await fs.access(manifest.outputDir);
+            const relocatedVideos = {};
+            for (const [uri, video] of Object.entries(saved.videos)) {
+              const relative = path.relative(oldProjectRoot, uri);
+              const nextUri = relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+                ? normalizeVideoUri(path.join(newProjectRoot, relative)) : normalizeVideoUri(uri);
+              if (Object.hasOwn(relocatedVideos, nextUri)) throw new Error('任务 URI 迁移冲突');
+              relocatedVideos[nextUri] = video;
+            }
+            saved.videos = relocatedVideos;
+            saved.outputDirectory = manifest.outputDir;
+            relocated = true;
+            manifest.onWarning('原项目目录已不存在，已迁移任务 URI 到当前项目目录，保留截图和检测状态');
+          } catch (error) {if(error.code !== "ENOENT") throw error;}
+        }
+      }
       const videos = {};
-      let upgraded = false;
+      let upgraded = relocated;
       for (const [uri, video] of Object.entries(saved.videos)) {
         const hasCompleted = Object.hasOwn(video, "completed");
         const completed = hasCompleted ? video.completed : video.phase === "completed" && hasCompletePlan(video);
-        videos[normalizeVideoUri(uri)] = { ...video, completed };
+        videos[normalizeVideoUri(uri)] = { ...video, completed, personCount: video.person?.filter(value => typeof value === "boolean").length ?? 0 };
         if (!hasCompleted) upgraded = true;
       }
       manifest.#data = { ...saved, videos };
@@ -113,8 +137,10 @@ export class ScreenshotTaskManifest {
       if (video.phase === "cancelled") summary.cancelledVideos++;
       summary.totalImages += video.frames.length;
       summary.completedImages += video.doneCount;
+      summary.skippedImages += video.skippedCount ?? 0;
+      summary.detectedImages += video.personCount ?? 0;
     }
-    summary.pendingImages = summary.totalImages - summary.completedImages;
+    summary.pendingImages = summary.totalImages - summary.completedImages - summary.skippedImages;
     this.#data.summary = summary;
   }
 
@@ -123,9 +149,10 @@ export class ScreenshotTaskManifest {
     return this.#data;
   }
 
-  startRun(videoPaths, { ignoredUris = [], runId = randomUUID() } = {}) {
+  startRun(videoPaths, { ignoredUris = [], runId = randomUUID(), activeUris, verifyFiles = false } = {}) {
     this.#assertOpen();
     const ignored = new Set(ignoredUris.map(normalizeVideoUri));
+    const active = activeUris ? new Set(activeUris.map(normalizeVideoUri)) : undefined;
     const reuseCompleted = this.#data.screenshotIntervalSeconds === this.intervalSeconds
       && normalizeVideoUri(this.#data.outputDirectory) === normalizeVideoUri(this.outputDir);
     const previousVideos = this.#data.videos;
@@ -133,20 +160,27 @@ export class ScreenshotTaskManifest {
     for (const videoPath of videoPaths) {
       const uri = normalizeVideoUri(videoPath);
       const previous = previousVideos[uri];
-      const completed = reuseCompleted && previous?.completed === true;
+      if (active && !active.has(uri) && previous && reuseCompleted) {videos[uri] = previous;continue;}
+      const completed = !verifyFiles && reuseCompleted && previous?.completed === true;
+      const personData = reuseCompleted ? {personCount: previous?.personCount ?? 0, person: previous?.person, excluded: previous?.excluded, skippedCount: previous?.skippedCount ?? 0} : {};
       videos[uri] = completed ? {
+        ...personData,
         fileName: path.basename(uri), duration: previous.duration, frames: previous.frames,
         doneCount: previous.doneCount, completed: true,
         imageLayout: previous?.imageLayout === "video-directory" ? "video-directory" : "flat",
         phase: ignored.has(uri) ? "ignored" : "completed", worker: null, error: null,
       } : {
-        fileName: path.basename(uri), duration: null, frames: [], doneCount: 0, completed: false,
+        ...personData,
+        fileName: path.basename(uri), duration: verifyFiles && reuseCompleted ? previous?.duration ?? null : null, frames: verifyFiles && reuseCompleted ? previous?.frames ?? [] : [], doneCount: verifyFiles && reuseCompleted ? previous?.doneCount ?? 0 : 0, completed: false,
         imageLayout: previous?.imageLayout === "video-directory" ? "video-directory" : "flat",
         phase: ignored.has(uri) ? "ignored" : "pending", worker: null, error: null,
       };
     }
     this.#data = {
       version: 1, screenshotIntervalSeconds: this.intervalSeconds, outputDirectory: this.outputDir,
+      personPolicy: reuseCompleted ? this.#data.personPolicy : undefined,
+      detectionRun: reuseCompleted ? this.#data.detectionRun : undefined,
+      imageOrganization: this.#data.imageOrganization,
       run: { id: runId, state: "running" }, updatedAt: new Date().toISOString(),
       summary: emptySummary(), videos,
     };
@@ -164,7 +198,7 @@ export class ScreenshotTaskManifest {
     return video;
   }
 
-  prepareVideo(uri, duration) {
+  prepareVideo(uri, duration, {preserveFrames = false} = {}) {
     this.#assertOpen();
     if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0) {
       throw new Error("视频时长必须为有效正数");
@@ -175,10 +209,26 @@ export class ScreenshotTaskManifest {
     if (!Number.isSafeInteger(frameCount) || frameCount > 0xffffffff) {
       throw new Error("预计截图数量超出有效范围");
     }
-    Object.assign(video, { duration, frames: new Array(frameCount).fill(false), doneCount: 0, completed: false,
+    video.person = Array.from({length: frameCount}, (_, i) => typeof video.person?.[i] === "boolean" ? video.person[i] : null);
+    video.excluded = Array.from({length: frameCount}, (_, i) => video.excluded?.[i] === true);
+    video.personCount = video.person.filter(value => typeof value === "boolean").length;
+    video.skippedCount = video.excluded.filter(Boolean).length;
+    const retainedFrames = Array.from({length: frameCount}, (_, i) => preserveFrames && video.frames[i] === true);
+    Object.assign(video, { duration, frames: retainedFrames, doneCount: retainedFrames.filter(Boolean).length, completed: false,
       phase: "checking", error: null });
+    video.skippedCount = video.excluded.filter((flag,index)=>flag && !video.frames[index]).length;
     this.#changed();
     return video;
+  }
+
+  markFramePending(uri, index) {
+    this.#assertOpen();
+    const video=this.#requireVideo(uri);
+    if (index < 0 || index >= video.frames.length) throw new RangeError("图片序号超出范围");
+    if(video.frames[index] !== true) return;
+    video.frames[index]=false;video.doneCount--;
+    if(video.excluded?.[index]) video.skippedCount=(video.skippedCount ?? 0)+1;
+    video.completed=false;this.#changed();
   }
 
   markFrameComplete(uri, index) {
@@ -188,6 +238,7 @@ export class ScreenshotTaskManifest {
       throw new RangeError(`截图序号超出范围: ${index}`);
     }
     if (video.frames[index] === true) return false;
+    if (video.excluded?.[index] === true) video.skippedCount = Math.max(0, (video.skippedCount ?? 0) - 1);
     video.frames[index] = true;
     video.doneCount++;
     this.#changed();
@@ -207,6 +258,54 @@ export class ScreenshotTaskManifest {
       : error === null ? null : String(error?.message ?? error);
     if (video.phase === phase && video.completed === completed && video.worker === nextWorker && video.error === nextError) return;
     Object.assign(video, { phase, completed, worker: nextWorker, error: nextError });
+    this.#changed();
+  }
+
+  setPersonPolicy(policy) {
+    this.#assertOpen();
+    if (JSON.stringify(this.#data.personPolicy) === JSON.stringify(policy)) return;
+    for (const video of Object.values(this.#data.videos)) {
+      video.person = video.frames.map(() => null);
+      video.personCount = 0;
+      video.excluded = video.frames.map(() => false);
+      video.skippedCount = 0;
+      if (video.doneCount !== video.frames.length) video.completed = false;
+    }
+    this.#data.personPolicy = policy;
+    this.#changed();
+  }
+
+  setOrganizationRun(details) {
+    this.#assertOpen();
+    this.#data.imageOrganization = {...this.#data.imageOrganization, ...details};
+    this.#changed();
+  }
+
+  setDetectionRun(details) {
+    this.#assertOpen();
+    this.#data.detectionRun = {...this.#data.detectionRun, ...details};
+    this.#changed();
+  }
+
+  markPersonResult(uri, index, value) {
+    this.#assertOpen();
+    const video = this.#requireVideo(uri);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= video.frames.length) throw new RangeError('检测序号超出范围');
+    if (value !== null && typeof value !== 'boolean') throw new TypeError('检测结果必须为 true/false/null');
+    video.person ??= video.frames.map(() => null);
+    if (video.person[index] === value) return;
+    video.personCount = (video.personCount ?? 0) + (typeof value === "boolean" ? 1 : 0) - (typeof video.person[index] === "boolean" ? 1 : 0);
+    video.person[index] = value;
+    this.#changed();
+  }
+
+  setExcluded(uri, flags) {
+    this.#assertOpen();
+    const video = this.#requireVideo(uri);
+    if (!Array.isArray(flags) || flags.length !== video.frames.length || flags.some(value => typeof value !== 'boolean')) throw new Error('排除标记必须和图片列表等长');
+    video.excluded = flags;
+    video.skippedCount = flags.filter((flag, index) => flag && video.frames[index] !== true).length;
+    if (!hasCompletePlan(video)) video.completed = false;
     this.#changed();
   }
 

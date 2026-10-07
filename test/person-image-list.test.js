@@ -67,12 +67,12 @@ test("清单拒绝缺失图片、非 JPG 和同名目录", (t) => {
 
 test("s3 参数显式启用清单，支持 pnpm 分隔符并拒绝错误参数", () => {
   assert.deepEqual(parseVideoArgs([]), { personJson: null, dryRun: false, help: false });
-  assert.deepEqual(parseVideoArgs(["--", "--person-json", "example.json", "--dry-run"]), {
-    personJson: path.resolve("example.json"), dryRun: true, help: false,
+  assert.deepEqual(parseVideoArgs(["--", "--person-json", "example.json", "--dry-run", "--no-person-filter"]), {
+    personJson: path.resolve("example.json"), dryRun: true, help: false, personFilter: false,
   });
   assert.equal(parseVideoArgs(["--help"]).help, true);
   assert.throws(() => parseVideoArgs(["--person-json"]), /必须指定/);
-  assert.throws(() => parseVideoArgs(["--person-json", "--dry-run"]), /必须指定/);
+  assert.throws(() => parseVideoArgs(["--person-json", "--dry-run", "--no-person-filter"]), /必须指定/);
   assert.throws(() => parseVideoArgs(["--unknown"]), /未知参数/);
 });
 
@@ -93,12 +93,12 @@ test("s3 dry-run 使用清单，仍校验完整间隔后缀和文件名，不改
     return { size: stat.size, mtimeMs: stat.mtimeMs };
   });
   const before = snapshot();
-  const output = execFileSync(process.execPath, [path.join(BaseDir, "src/screenshot-2-video.js"), "--month", "202512", "--person-json", listPath, "--dry-run"], { encoding: "utf8" });
+  const output = execFileSync(process.execPath, [path.join(BaseDir, "src/screenshot-2-video.js"), "--month", "202512", "--person-json", listPath, "--dry-run", "--no-person-filter"], { encoding: "utf8" });
   assert.match(output, /本次将合成 2 张图片/);
   assert.ok(output.includes(listPath));
   assert.deepEqual(snapshot(), before);
 
-  const emptyOutput = execFileSync(process.execPath, [path.join(BaseDir, "src/screenshot-2-video.js"), "--person-json", f.json([]), "--dry-run"], { encoding: "utf8" });
+  const emptyOutput = execFileSync(process.execPath, [path.join(BaseDir, "src/screenshot-2-video.js"), "--person-json", f.json([]), "--dry-run", "--no-person-filter"], { encoding: "utf8" });
   assert.match(emptyOutput, /本次将合成 0 张图片/);
   assert.deepEqual(snapshot(), before);
 });

@@ -14,9 +14,21 @@ export const InputVideoDir = path.resolve(BaseDir, "input");
 export const BackupVideoDir = path.resolve(BaseDir, "backup");
 export const OutputImgDir = path.resolve(BaseDir, "output");
 // duration 保存视频 URI 对应的时长（秒）；ignore 中 URI 为 true 时跳过提取。
-export const VideoDurationCachePath = path.resolve(BaseDir, "cache", "video-durations.json");
-export const ScreenshotTaskManifestPath = path.resolve(BaseDir, "cache", "screenshot-tasks.json");
-export const TaskProgressHtmlPath = path.resolve(BaseDir, "cache", "screenshot-progress.html");
+export const VideoDurationCachePath = path.resolve(
+  BaseDir,
+  "cache",
+  "video-durations.json",
+);
+export const ScreenshotTaskManifestPath = path.resolve(
+  BaseDir,
+  "cache",
+  "screenshot-tasks.json",
+);
+export const TaskProgressHtmlPath = path.resolve(
+  BaseDir,
+  "cache",
+  "screenshot-progress.html",
+);
 export const TaskManifestFlushIntervalSeconds = 5; // 整体任务 JSON / HTML 快照保存间隔
 export const VideoProbeConcurrency = 4; // 规划阶段读取时长和检查已有图片的 worker 数
 
@@ -39,7 +51,12 @@ export const FfmpegProgressIntervalSeconds = 5; // FFmpeg 内部进度采样间�
 export const NvidiaDiagnosticsEnabled = true; // 只读查询 NVIDIA 解码率/显存
 
 // 图片、备份视频整理月份（YYYYMM）。
-export const TargetMonth = "202609";
+export const TargetMonth = "202601";
+
+export const PersonAbsentRun = 10; // 连续无人触发区间
+export const PersonPresentRun = 3; // 连续有人终止区间，保留这三张
+export const PersonConfidence = 0.15;
+export const PersonFilterForComposition = true; // 合成只读取已检测有人且不在无人区间的图片
 
 export function validateScreenshotInterval() {
   if (
@@ -51,9 +68,16 @@ export function validateScreenshotInterval() {
 }
 
 export function validateVideoConcurrency() {
-  if (typeof ImageOutputByVideo !== "boolean") throw new Error("ImageOutputByVideo 必须为布尔值");
-  for (const [name, value] of Object.entries({ ImageMoveConcurrency, ImageMoveQueueCapacity, VideoProbeConcurrency, TaskManifestFlushIntervalSeconds })) {
-    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为正整数`);
+  if (typeof ImageOutputByVideo !== "boolean")
+    throw new Error("ImageOutputByVideo 必须为布尔值");
+  for (const [name, value] of Object.entries({
+    ImageMoveConcurrency,
+    ImageMoveQueueCapacity,
+    VideoProbeConcurrency,
+    TaskManifestFlushIntervalSeconds,
+  })) {
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new Error(`${name} 必须为正整数`);
   }
   const counts = {
     VideoConcurrency,
@@ -74,13 +98,21 @@ export function validateVideoConcurrency() {
 }
 
 export function validateWorkerDiagnostics() {
-  if (!Number.isSafeInteger(WorkerStatusIntervalSeconds) || WorkerStatusIntervalSeconds < 0) {
+  if (
+    !Number.isSafeInteger(WorkerStatusIntervalSeconds) ||
+    WorkerStatusIntervalSeconds < 0
+  ) {
     throw new Error("WorkerStatusIntervalSeconds 必须为非负整数，0 为关闭心跳");
   }
-  for (const [name, value] of Object.entries({ WorkerStallWarningSeconds, FfmpegProgressIntervalSeconds })) {
-    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为正整数`);
+  for (const [name, value] of Object.entries({
+    WorkerStallWarningSeconds,
+    FfmpegProgressIntervalSeconds,
+  })) {
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new Error(`${name} 必须为正整数`);
   }
-  if (typeof NvidiaDiagnosticsEnabled !== "boolean") throw new Error("NvidiaDiagnosticsEnabled 必须为布尔值");
+  if (typeof NvidiaDiagnosticsEnabled !== "boolean")
+    throw new Error("NvidiaDiagnosticsEnabled 必须为布尔值");
 }
 
 export const asyncConfirmIt = async (tip = "") => {
@@ -98,3 +130,9 @@ export const asyncConfirmIt = async (tip = "") => {
     rl.close();
   }
 };
+
+export function validatePersonConfig() {
+  for (const [name,value] of Object.entries({PersonAbsentRun,PersonPresentRun})) if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 必须为正整数`);
+  if (!Number.isFinite(PersonConfidence) || PersonConfidence <= 0 || PersonConfidence > 1) throw new Error("PersonConfidence 必须在 (0,1] 之间");
+  if (typeof PersonFilterForComposition !== "boolean") throw new Error("PersonFilterForComposition 必须为布尔值");
+}

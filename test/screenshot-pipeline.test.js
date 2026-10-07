@@ -133,10 +133,10 @@ async function createFixture(t, { slowRenameMs = 0, byVideo = false } = {}) {
   }
   let runIndex = 0;
   return {
-    directory, videos,
-    async run({ stopAfterFfmpeg = 0, renameDelayMs = slowRenameMs } = {}) {
+    directory, videos, copyModule,
+    async run({ stopAfterFfmpeg = 0, renameDelayMs = slowRenameMs, month } = {}) {
       const tracePath = path.join(directory, `trace-${runIndex++}.jsonl`);
-      const result = await command(process.execPath, ["--require", path.join(directory, "hook.cjs"), path.join(directory, "src", "monitor-video-2-img.js")], {
+      const result = await command(process.execPath, ["--require", path.join(directory, "hook.cjs"), path.join(directory, "src", "monitor-video-2-img.js"), ...(month ? ["--month", month, "--yes"] : [])], {
         cwd: directory,
         env: { ...process.env, SCREENSHOT_PIPELINE_TRACE: tracePath, SCREENSHOT_PIPELINE_RENAME_DELAY_MS: String(renameDelayMs), SCREENSHOT_PIPELINE_OUTPUT: path.join(directory, "output"), SCREENSHOT_PIPELINE_STOP_AFTER_FFMPEG: String(stopAfterFfmpeg) },
       });
@@ -302,4 +302,61 @@ test("directory mode preserves partial legacy flat screenshots", async t => {
   assertCompleted(manifest, fixture.videos);
   assert.equal(manifest.videos[uri(fixture.videos[0])].imageLayout, "flat");
   for (let index = 0; index < 3; index++) assert.ok((await fs.stat(path.join(fixture.directory, "output", stem + "_" + String(index).padStart(4, "0") + "_step_by_1s.jpg"))).size > 0);
+});
+
+
+test("excluded frames are never written and excluded-only videos need no FFmpeg", async t => {
+ const fixture=await createFixture(t);
+ const {ScreenshotTaskManifest}=await import('../src/screenshot-task-manifest.js');
+ const manifest=await ScreenshotTaskManifest.open(path.join(fixture.directory,'cache','screenshot-tasks.json'),{intervalSeconds:1,outputDir:path.join(fixture.directory,'output'),flushIntervalMs:0});
+ manifest.startRun(fixture.videos);
+ for(const [index,video]of fixture.videos.entries()){manifest.prepareVideo(video,2.1);manifest.setExcluded(video,index===0?[false,true,true]:[true,true,true]);}
+ await manifest.close();
+ const result=await fixture.run();assert.equal(result.code,0,result.stdout+result.stderr);
+ assert.equal(result.trace.filter(event=>event.type==='start'&&event.kind==='ffmpeg').length,1);
+ const files=await assertCleanOutput(fixture);assert.equal(files.filter(name=>name.endsWith('.jpg')).length,1);
+ assert.ok(files[0].includes('_0000_step_by_1s'));
+ const saved=await fixture.manifest();assert.equal(saved.summary.skippedImages,8);assert.equal(saved.summary.completedImages,1);assert.equal(saved.summary.completedVideos,3);
+});
+
+test("organized calendar images remain cache hits when incomplete videos are verified", async t => {
+ const fixture=await createFixture(t);const first=await fixture.run();assert.equal(first.code,0,first.stdout+first.stderr);
+ const {organizeImagesByMonth}=await import('../src/organize-img-files.js');
+ const result=await organizeImagesByMonth(path.join(fixture.directory,'output'),'202601');assert.equal(result.moved,9);
+ const manifest=await fixture.manifest();for(const video of Object.values(manifest.videos))video.completed=false;
+ await fs.writeFile(path.join(fixture.directory,'cache','screenshot-tasks.json'),JSON.stringify(manifest));
+ const cached=await fixture.run();assert.equal(cached.code,0,cached.stdout+cached.stderr);
+ assert.equal(cached.trace.filter(event=>event.type==='start'&&event.kind==='ffmpeg').length,0);
+ assertCompleted(await fixture.manifest(),fixture.videos);
+});
+
+
+test("monthly composition uses unified person decisions and file-name order after organization", async t => {
+ const fixture=await createFixture(t);const first=await fixture.run();assert.equal(first.code,0,first.stdout+first.stderr);
+ await fixture.copyModule(path.join('src','screenshot-2-video.js'));
+ const {organizeImagesByMonth}=await import('../src/organize-img-files.js');await organizeImagesByMonth(path.join(fixture.directory,'output'),'202601');
+ const manifest=await fixture.manifest();manifest.personPolicy={confidence:0.15,absentRun:10,presentRun:3};
+ for(const video of Object.values(manifest.videos)){video.person=[true,false,true];video.excluded=[false,false,true];}
+ await fs.writeFile(path.join(fixture.directory,'cache','screenshot-tasks.json'),JSON.stringify(manifest));
+ const dry=await command(process.execPath,[path.join(fixture.directory,'src','screenshot-2-video.js'),'--month','202601','--dry-run'],{cwd:fixture.directory});
+ assert.equal(dry.code,0,dry.stdout+dry.stderr);assert.match(dry.stdout,/本次将合成 3 张图片/);assert.ok(dry.stdout.includes("人员筛选：排除 6 张，未检测/失败 0 张"));
+ Object.values(manifest.videos)[0].person[0]=null;await fs.writeFile(path.join(fixture.directory,'cache','screenshot-tasks.json'),JSON.stringify(manifest));
+ const blocked=await command(process.execPath,[path.join(fixture.directory,'src','screenshot-2-video.js'),'--month','202601'],{cwd:fixture.directory});assert.equal(blocked.code,1);assert.match(blocked.stdout+blocked.stderr,/请先完成 --tasks 检测/);
+ for(const video of Object.values(manifest.videos))video.person=[null,null,null];
+ await fs.writeFile(path.join(fixture.directory,"cache","screenshot-tasks.json"),JSON.stringify(manifest));
+ const emptyUnknown=await command(process.execPath,[path.join(fixture.directory,"src","screenshot-2-video.js"),"--month","202601"],{cwd:fixture.directory});assert.equal(emptyUnknown.code,1);
+});
+
+
+test("monthly screenshots go directly to calendar folders, split cross-month frames and repair deleted cache files", async t => {
+ const fixture=await createFixture(t);
+ const old=fixture.videos[0],video=path.join(path.dirname(old),'20260131235959_20260201000002.mp4');await fs.rename(old,video);fixture.videos[0]=video;
+ const feb=await fixture.run({month:'202602'});assert.equal(feb.code,0,feb.stdout+feb.stderr);assert.equal(feb.trace.filter(event=>event.type==='start'&&event.kind==='ffmpeg').length,1);
+ const febDir=path.join(fixture.directory,'output','2026','02','0201');let images=await fs.readdir(febDir);assert.equal(images.length,2);assert.ok(images.some(name=>name.includes('_0001_')));assert.ok(images.some(name=>name.includes('_0002_')));
+ let manifest=await fixture.manifest();assert.deepEqual(manifest.videos[uri(video)].frames,[false,true,true]);assert.equal(manifest.videos[uri(video)].completed,false);
+ const jan=await fixture.run({month:'202601'});assert.equal(jan.code,0,jan.stdout+jan.stderr);assert.equal((await fs.readdir(path.join(fixture.directory,'output','2026','01','0131'))).length,1);
+ manifest=await fixture.manifest();assert.deepEqual(manifest.videos[uri(video)].frames,[true,true,true]);assert.equal(manifest.videos[uri(video)].completed,true);
+ const cached=await fixture.run({month:'202602'});assert.equal(cached.code,0,cached.stdout+cached.stderr);assert.equal(cached.trace.filter(event=>event.type==='start'&&event.kind==='ffmpeg').length,0);
+ await fs.rm(path.join(febDir,images.find(name=>name.includes('_0002_'))));
+ const repair=await fixture.run({month:'202602'});assert.equal(repair.code,0,repair.stdout+repair.stderr);assert.equal(repair.trace.filter(event=>event.type==='start'&&event.kind==='ffmpeg').length,1);assert.equal((await fs.readdir(febDir)).length,2);assert.deepEqual((await fixture.manifest()).videos[uri(video)].frames,[true,true,true]);
 });

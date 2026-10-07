@@ -279,3 +279,43 @@ export const NvidiaDiagnosticsEnabled = true; // 使用 nvidia-smi 读取 NVIDIA
 ### 按月合成
 
 `pnpm s3` 默认只合成公共配置 `TargetMonth` 指定月份的图片。临时指定月份可执行 `pnpm s3 --month 202606`，先查看数量可执行 `pnpm s3 --month 202606 --dry-run`。月份按视频起始时间加图片序号乘截图间隔计算，跨月截图归入实际拍摄月份。仍递归读取图片、按 URI 排序并过滤截图间隔，普通模式 24 fps、每日一张模式 2 fps。输出如 `小朋友成长记_202606_step_by_10s_output.mp4`，不同月份和间隔使用独立视频及图片清单。可与 `--person-json` 同时使用。合成不会自动删除图片；按月输出本身不释放已有截图占用。
+
+### 统一人员区间任务与日期目录
+
+先正常结束当前 m1。以 202602 月为例：
+
+```powershell
+pnpm o2 --month 202602
+pnpm detect-person --tasks --month 202602
+pnpm s3 --month 202602 --dry-run
+pnpm s3 --month 202602
+```
+
+`o2` 递归迁移该月截图到 `output/YYYY/MM/MMDD/`，月份和日期按实际截图时间计算，兼容原来的平铺、按视频和旧日期目录，不覆盖冲突文件。任务人员结果用视频 URI + 截图序号识别，移动图片不会丢失检测结果。生成阶段仍允许按视频整目录发布以维持性能，再使用 o2 整理。m1 在补齐时同时检查三层日期目录和原生成目录；已有 completed=true 仍直接跳过。
+
+`detect-person --tasks` 复用原检测器，将 person（true/false/null）和 excluded（boolean）逐帧保存在 `cache/screenshot-tasks.json`，检测进度也存入 detectionRun，HTML 进度页展示检测数量及每张图片的人员/排除状态。旧 detect-person 批量/单图模式保留；只有 --tasks 模式更新统一任务。不必运行全部月份，可每月分别完成。检测可中断后重新运行，已检测图片不再推理；模型哈希、置信度、预处理版本、间隔、区间阈值变化时重新建立检测结果。
+
+连续 10 张无人触发区间，向前和向后延伸到连续 3 张有人为止，保留这 3 张边界图片。区间内孤立的 1～2 张有人也排除；未知、缺图和检测失败阻止扩展。区间可跨相邻视频，按图片文件名升序判断。阈值 PersonAbsentRun / PersonPresentRun 和置信度 PersonConfidence 在公共常量中。
+
+合成默认只保留检测为有人且不在无人区间的图片，按文件名升序排列。遇到未检测图片只在 dry-run 报告，正式合成要求先完成检测；显式 --no-person-filter 可恢复旧的全图合成。首次检测仍需要已有图片，之后 m1 的 FFmpeg 只编码、输出未完成且未排除的帧，不再输出已确认无人区间的 JPEG；原视频仍可能需要顺序解码。frames 只表示图片生成状态，excluded 表示排除决策，未生成的排除帧计入 skippedImages，视频整体可完成而不用伪造图片存在。
+
+m1、o2、--tasks 互斥使用同一清单锁，避免覆盖进度。异常关机留下锁时，确认相关进程已退出后再删除清单旁的 .lock 文件。此流程不自动删除已有无人图片，也不会直接释放已有图片占用。
+
+### 指定月份的一套命令
+
+```powershell
+pnpm m1 --month 202603
+pnpm detect-person --tasks --month 202603
+pnpm s3 --month 202603 --dry-run
+pnpm s3 --month 202603
+```
+
+按月 m1 直接写入 `output/2026/03/0301/` 等三层目录，无需再执行 o2。它每次检查这些目录中对应图片是否为非空文件，缺图会补齐；已确认无人区间仍跳过。只选与该月相交的视频，跨月视频仅输出实际时间属于本月的帧。跨月任务只有整条视频所有必要帧都完成才标记 completed=true，本月完成但其他月份尚未生成时记为 month_completed。其他月份的检测记录继续保留。不带 --month 的 m1 保留原模式。
+
+一键执行同一月份全部步骤：
+
+```powershell
+pnpm month --month 202603
+```
+
+只需开始时确认一次，任一步失败停止后续步骤。不指定月份默认 TargetMonth；`--yes` 可省略确认。单步命令仍可独立执行。一键入口不会删除原视频或图片。

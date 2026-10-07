@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import * as Const from "./const/index.js";
+import {imageInfo, compareImageNames} from "./image-timeline.js";
 import { execFileSync, spawn } from "child_process";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat.js";
@@ -39,6 +40,10 @@ export function parseVideoArgs(argv) {
         throw new Error("--person-json 后必须指定 JSON 文件路径");
       }
       options.personJson = path.resolve(value);
+    } else if (arg === "--yes") {
+      options.yes = true;
+    } else if (arg === "--no-person-filter") {
+      options.personFilter = false;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -57,6 +62,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   --month YYYYMM        合成月份，默认读取公共配置 TargetMonth
   --person-json <路径>  只合成清单中的图片；JSON 必须为绝对 JPG/JPEG 路径或本地 file URI 的字符串数组
+  --no-person-filter    显式关闭人员过滤，按旧方式合成全部匹配图片
   --dry-run             打印匹配数量及清单来源，不运行 FFmpeg、不改写图片列表或视频
   --help, -h            显示帮助
 
@@ -65,6 +71,8 @@ export async function main(argv = process.argv.slice(2)) {
   }
   Const.validateScreenshotInterval();
   const month = validateCompositionMonth(options.month ?? Const.TargetMonth);
+  Const.validatePersonConfig();
+  const filterPerson = Const.PersonFilterForComposition && options.personFilter !== false;
   const suffix = `${month}_step_by_${Const.ScreenshotIntervalSeconds}s`;
   const listFilePath = path.resolve(Base_Dir, `images_list_${suffix}.txt`);
   const outputVideo = path.resolve(Base_Dir, `${flag_每日一张图模式 ? "每日一张图" : "小朋友成长记"}_${suffix}_output.mp4`);
@@ -158,6 +166,14 @@ export async function main(argv = process.argv.slice(2)) {
         path.basename(item, path.extname(item)).endsWith(intervalTag),
       )
     : getAllImages(Output_Dir);
+  let personTasks;
+  if (filterPerson) {
+    try {personTasks = JSON.parse(fs.readFileSync(Const.ScreenshotTaskManifestPath, "utf8"));}
+    catch (error) {throw new Error("请先运行 pnpm detect-person --tasks --month " + month + "，无法读取任务清单: " + error.message);}
+    if (personTasks.screenshotIntervalSeconds !== Const.ScreenshotIntervalSeconds || !personTasks.personPolicy || personTasks.personPolicy.confidence !== Const.PersonConfidence || personTasks.personPolicy.absentRun !== Const.PersonAbsentRun || personTasks.personPolicy.presentRun !== Const.PersonPresentRun) throw new Error("请先用 detect-person --tasks 检测当前截图间隔");
+  }
+  const personByStem = new Map(Object.values(personTasks?.videos ?? {}).map(video => [path.basename(video.fileName, path.extname(video.fileName)), video]));
+  let personExcluded = 0, unknownPerson = 0;
   // 解析文件名，转换为时间戳
   let imageFileList = [];
   for (const item of rawImageFileList) {
@@ -184,6 +200,11 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const fileTimeAt = startTime.unix() + fileCount * intervalSeconds;
     if (screenshotMonth(startTimeStr, fileCount, intervalSeconds) !== month) continue;
+    if (filterPerson) {
+      const info = imageInfo(item), task = personByStem.get(info.stem);
+      if (typeof task?.person?.[info.index] !== "boolean") {unknownPerson++; continue;}
+      if (task.person[info.index] !== true || task.excluded?.[info.index]) {personExcluded++; continue;}
+    }
     const fileDayStr = dayjs.unix(fileTimeAt).format("YYYY-MM-DD");
     // 录入文件列表中
     imageFileList.push({
@@ -194,6 +215,8 @@ export async function main(argv = process.argv.slice(2)) {
       timeAtStr: dayjs.unix(fileTimeAt).format("YYYY-MM-DD HH:mm:ss"),
     });
   }
+
+  if (unknownPerson && !options.dryRun) throw new Error("该月仍有未检测或检测失败图片，请先完成 --tasks 检测后再合成");
 
   if (imageFileList.length === 0) {
     const source = options.personJson
@@ -206,7 +229,9 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   // 目录和文件名已有序，按完整 URI 路径确定合成顺序
-  imageFileList.sort((a, b) => compareImageUris(a.fileUri, b.fileUri));
+  imageFileList.sort((a, b) => compareImageNames(a.fileUri, b.fileUri));
+  if (filterPerson) logger.log(`人员筛选：排除 ${personExcluded} 张，未检测/失败 ${unknownPerson} 张`);
+
 
   // 只输出每天的第一张照片
   const imageFileByDay = {};
@@ -238,7 +263,7 @@ export async function main(argv = process.argv.slice(2)) {
     })
     .join("\n");
 
-  await Const.asyncConfirmIt(
+  if (!options.yes) await Const.asyncConfirmIt(
     `整理完毕，${month} 月匹配 ${intervalTag}，共需处理${fileContent.split("\n").length}张图片`,
   );
   fs.writeFileSync(listFilePath, fileContent);
@@ -295,12 +320,14 @@ export async function main(argv = process.argv.slice(2)) {
       // fs.unlinkSync(listFilePath);
     } else {
       logger.error(`\n❌ FFmpeg 进程退出，退出码: ${code}`);
+      process.exitCode = 1;
     }
   });
 
   // 监听错误（如找不到 ffmpeg 命令）
   ffmpeg.on("error", (err) => {
     logger.error("无法启动 FFmpeg 子进程:", err);
+    process.exitCode = 1;
   });
 }
 

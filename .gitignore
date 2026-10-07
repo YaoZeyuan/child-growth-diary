@@ -19,3 +19,5 @@ detection-results/
 /cache/screenshot-tasks.json.*.tmp
 /cache/screenshot-progress.html
 /cache/screenshot-progress.html.*.tmp
+
+/cache/screenshot-tasks.json.lock

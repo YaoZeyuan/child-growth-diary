@@ -51,7 +51,7 @@ test("61 seconds at 20-second intervals plans four boolean flags and marking twi
   assert.equal(manifest.getVideo(video).doneCount, 1);
   assert.deepEqual(manifest.snapshot.summary, {
     totalVideos: 1, ignoredVideos: 0, plannedVideos: 1, completedVideos: 0,
-    totalImages: 4, completedImages: 1, pendingImages: 3, failedVideos: 0, cancelledVideos: 0,
+    totalImages: 4, completedImages: 1, skippedImages: 0, detectedImages: 0, pendingImages: 3, failedVideos: 0, cancelledVideos: 0,
   });
   for (const index of [0, 2, 3]) manifest.markFrameComplete(video, index);
   manifest.setPhase(video, "completed", { worker: "image-worker-1" });
@@ -243,7 +243,7 @@ test("ignored, failed, cancelled and complete videos produce independent summary
   manifest.setPhase(complete, "completed", { worker: "image-worker-1" });
   assert.deepEqual(manifest.snapshot.summary, {
     totalVideos: 5, ignoredVideos: 1, plannedVideos: 3, completedVideos: 1,
-    totalImages: 7, completedImages: 3, pendingImages: 4, failedVideos: 1, cancelledVideos: 1,
+    totalImages: 7, completedImages: 3, skippedImages: 0, detectedImages: 0, pendingImages: 4, failedVideos: 1, cancelledVideos: 1,
   });
   assert.equal(manifest.getVideo(failed).error, "missing frame");
   manifest.setRunState("cancelled");

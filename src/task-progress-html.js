@@ -49,7 +49,7 @@ export async function writeTaskProgressHtml(htmlPath, jsonText) {
   var IMAGE_PAGE_SIZE = 24;
   var data = JSON.parse(document.getElementById("task-snapshot").textContent);
   var summary = data.summary || {};
-  var run = data.run || {};
+  var run = data.detectionRun?.state === "running" ? data.detectionRun : data.run || {};
   var entries = Object.entries(data.videos || {});
   var detailState = new Map();
   var page = 0;
@@ -87,7 +87,9 @@ export async function writeTaskProgressHtml(htmlPath, jsonText) {
     var list = text("div", "", "image-list");
     for (var i = start; i < Math.min(start + IMAGE_PAGE_SIZE, images.length); i++) {
       var done = images[i] === true;
-      list.append(text("span", (done ? "✅" : "🕛") + " #" + String(i).padStart(4, "0") + " · " + timeAt(i), "image-item" + (done ? " done" : "")));
+      var excluded = video.excluded?.[i] === true;
+      var personLabel = video.person?.[i] === true ? "有人" : video.person?.[i] === false ? "无人" : "未检测";
+      list.append(text("span", (excluded ? "🚫" : done ? "✅" : "🕛") + " #" + String(i).padStart(4, "0") + " · " + timeAt(i) + " · " + personLabel + (excluded ? " · 区间排除" : ""), "image-item" + (done ? " done" : "")));
     }
     var controls = text("div", "", "image-pager");
     var range = images.length ? "第 " + (start + 1) + "–" + Math.min(start + IMAGE_PAGE_SIZE, images.length) + " 张 / 共 " + images.length + " 张" : "尚未规划图片";
@@ -160,12 +162,12 @@ export async function writeTaskProgressHtml(htmlPath, jsonText) {
     document.getElementById("phase-filter").append(option);
   });
   var totalImages = count(summary.totalImages);
-  var completedImages = count(summary.completedImages);
+  var completedImages = count(summary.completedImages) + count(summary.skippedImages);
   var percent = totalImages ? Math.min(100, 100 * completedImages / totalImages) : 0;
   document.getElementById("image-count").textContent = completedImages.toLocaleString() + " / " + totalImages.toLocaleString() + " 张";
   document.getElementById("image-progress").max = totalImages || 1;
   document.getElementById("image-progress").value = Math.min(completedImages, totalImages);
-  document.getElementById("image-percent").textContent = "完成 " + percent.toFixed(1) + "% · 待完成 " + count(summary.pendingImages).toLocaleString() + " 张";
+  document.getElementById("image-percent").textContent = "完成 " + percent.toFixed(1) + "% · 待完成 " + count(summary.pendingImages).toLocaleString() + " 张 · 无人跳过 " + count(summary.skippedImages).toLocaleString() + " 张 · 已检测 " + count(summary.detectedImages).toLocaleString() + " 张";
   document.getElementById("run-state").textContent = label(runLabels, run.state);
   var updated = new Date(data.updatedAt);
   document.getElementById("updated-at").textContent = "更新时间：" + (Number.isNaN(updated.getTime()) ? String(data.updatedAt || "未知") : updated.toLocaleString("zh-CN", { hour12: false }));

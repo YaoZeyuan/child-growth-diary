@@ -12,6 +12,7 @@ const HELP = `判断图片中是否有人（宝宝或成人均算）。
   node src/detect-person.js --all --no-html
 
 选项：
+  --tasks            更新统一截图任务中的人员结果和无人区间，可搭配 --month YYYYMM
   --image PATH       单张图片；标准输出只有 true / false，出错时不输出布尔值
   --input DIR        批量扫描目录，默认 output；递归扫描 .jpg 和 .jpeg
   --limit N          检查 URI 升序的前 N 张，默认 100（包含命中缓存的图片）
@@ -122,6 +123,10 @@ export async function findImages(directory) {
 }
 
 export async function main(args = process.argv.slice(2)) {
+  if (args.includes("--tasks")) {
+    const {main} = await import("./person-task-pipeline.js");
+    return main(args.filter(arg => arg !== "--tasks"));
+  }
   const options = parseArgs(args);
   if (options.help) {
     process.stdout.write(HELP);

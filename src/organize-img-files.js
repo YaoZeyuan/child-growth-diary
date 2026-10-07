@@ -1,110 +1,35 @@
-import fs from "fs";
-import path from "path";
-import * as Const from "./const/index.js";
-import { logger } from "./util/logger.js";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import * as Const from './const/index.js';
+import {calendarImagePath,imageInfo,walkImages} from './image-timeline.js';
+import {ScreenshotTaskManifest} from './screenshot-task-manifest.js';
+import {writeTaskProgressHtml} from './task-progress-html.js';
+import {acquireTaskLock} from './task-lock.js';
 
-const Input_Dir = Const.InputVideoDir;
-const Output_Dir = Const.OutputImgDir;
-const Base_Dir = Const.OutputImgDir;
-
-const targetMonth = Const.TargetMonth;
-
-const fileInfoMap = {};
-const files = fs.readdirSync(Output_Dir);
-
-function getFileInfo(uri) {
-  if (fileInfoMap[uri]) {
-    return fileInfoMap[uri];
-  }
-  const item = fs.lstatSync(uri);
-  fileInfoMap[uri] = item;
-  return item;
+export async function organizeImagesByMonth(root,month,{onProgress=()=>{},signal}={}) {
+ if(!/^\d{4}(0[1-9]|1[0-2])$/.test(month??''))throw new Error('月份必须为 YYYYMM');
+ const counts={moved:0,skipped:0,conflicts:0},directories=new Set();
+ // Snapshot source paths before moving, so newly created directories are not traversed twice.
+ const files=[];for await(const file of walkImages(root,fs)){const info=imageInfo(file);if(info?.month===month)files.push(file);}
+ for(const file of files){signal?.throwIfAborted();const target=calendarImagePath(root,path.basename(file));
+  if(path.resolve(file)===path.resolve(target)){counts.skipped++;continue;}
+  const sourceStat=await fs.stat(file);if(sourceStat.size<=0){counts.skipped++;continue;}
+  let exists=false;try{await fs.stat(target);exists=true;}catch(error){if(error.code!=='ENOENT')throw error;}
+  if(exists){counts.conflicts++;console.error('目标图片已存在，保留两份文件避免覆盖: '+target);continue;}
+  const dir=path.dirname(target);if(!directories.has(dir)){await fs.mkdir(dir,{recursive:true});directories.add(dir);}
+  await fs.rename(file,target);counts.moved++;if(counts.moved%100===0)await onProgress({...counts,state:'running',month});
+ }
+ await onProgress({...counts,state:'completed',month});return counts;
 }
-
-/**
- * 检查当前文件列表中，是否有dateStr开头的项目。
- * 如果没有，就不需要再创建文件夹了
- * @param {*} dateStr
- * @returns
- */
-function isDateExist(dateStr) {
-  for (const file of files) {
-    const oldPath = path.join(Base_Dir, file);
-    if (file.includes(".") === false && file.includes("_") === false) {
-      // 不是文件，则不需要处理
-      continue;
-    }
-    if (file.startsWith(dateStr)) {
-      return true;
-    }
-  }
-  return false;
+export async function main(argv=process.argv.slice(2)){
+ let month=Const.TargetMonth;for(let i=0;i<argv.length;i++){if(argv[i]==='--')continue;if(argv[i]==='--month')month=argv[++i];else throw new Error('未知参数: '+argv[i]);}
+ await Const.asyncConfirmIt('整理 '+month+' 月图片到 YYYY/MM/MMDD，不覆盖已有文件');
+ const release=await acquireTaskLock(Const.ScreenshotTaskManifestPath);let manifest;
+ try{
+  manifest=await ScreenshotTaskManifest.open(Const.ScreenshotTaskManifestPath,{intervalSeconds:Const.ScreenshotIntervalSeconds,outputDir:Const.OutputImgDir,onSnapshot:text=>writeTaskProgressHtml(Const.TaskProgressHtmlPath,text)});
+  const result=await organizeImagesByMonth(Const.OutputImgDir,month,{onProgress:async details=>{manifest.setOrganizationRun({layout:'YYYY/MM/MMDD',...details});await manifest.flush();console.log('图片整理',JSON.stringify(details));}});
+  if(result.conflicts)process.exitCode=1;
+ }finally{try{await manifest?.close();}finally{await release();}}
 }
-
-async function organizeFiles() {
-  // 执行前最后确认
-  await Const.asyncConfirmIt(
-    `准备启动对文件夹 ${Base_Dir} 内, 属于${targetMonth}月文件的规整`,
-  );
-
-  try {
-    // 1. 解析年份和月份
-    const year = parseInt(targetMonth.substring(0, 4));
-    const month = parseInt(targetMonth.substring(4, 6));
-
-    // 2. 获取该月的天数 (利用 Date 对象的溢出特性)
-    const daysInMonth = new Date(year, month, 0).getDate();
-
-    logger.log(`正在处理 ${targetMonth}，共计 ${daysInMonth} 天...`);
-
-    // 3. 循环创建日期文件夹并移动文件
-    for (let day = 1; day <= daysInMonth; day++) {
-      // 格式化日期为 YYYYMMDD (例如 20251201)
-      const dateStr = `${targetMonth}${day.toString().padStart(2, "0")}`;
-      const folderPath = path.join(Base_Dir, dateStr);
-      if (isDateExist(dateStr) === false) {
-        logger.log(`❌不存在归属于${dateStr}下的文件，自动跳过`);
-        continue;
-      }
-
-      // 如果文件夹不存在，则创建
-      if (!fs.existsSync(folderPath)) {
-        fs.mkdirSync(folderPath, { recursive: true });
-      }
-      logger.log(`文件夹 ${folderPath} 创建完毕`);
-
-      // 4. 读取根目录下的所有文件
-      let i = 0;
-      for (const file of files) {
-        i++;
-        const oldPath = path.join(Base_Dir, file);
-        const newPath = path.join(folderPath, file);
-
-        // logger.log(`检查第${i}/${files.length}个文件${oldPath}`);
-        if (file.startsWith(dateStr) === false) {
-          //   logger.log(`🕛无需移动，自动跳过`);
-          continue;
-        }
-
-        // 检查：是文件、以日期开头、且不是文件夹本身
-        if (getFileInfo(oldPath).isFile()) {
-          try {
-            fs.renameSync(oldPath, newPath);
-            // logger.log(`✅已移动: ${file} -> ${dateStr}/`);
-          } catch (moveErr) {
-            logger.error(`❌移动文件 ${file} 失败:`, moveErr);
-          }
-        } else {
-          // logger.log(`🕛无需移动，自动跳过`);
-        }
-      }
-      logger.log(`✅文件夹 ${folderPath} 整理完毕`);
-    }
-
-    logger.log("任务完成！");
-  } catch (err) {
-    logger.error("发生错误:", err);
-  }
-}
-
-organizeFiles();
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)main().catch(error=>{console.error(error.message);process.exitCode=1;});

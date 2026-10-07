@@ -7,6 +7,8 @@ import fs from "node:fs/promises";
 import path from "path";
 import dayjs from "dayjs";
 import * as Const from "./const/index.js";
+import {calendarImagePath, imageInfo} from "./image-timeline.js";
+import {acquireTaskLock} from "./task-lock.js";
 import { logger } from "./util/logger.js";
 import { VideoDurationCache } from "./video-duration-cache.js";
 import { createImageTaskPool } from "./image-task-pool.js";
@@ -19,6 +21,15 @@ const ffmpegPath = path.join(ffmpegBinDir, "ffmpeg.exe");
 const ffprobePath = path.join(ffmpegBinDir, "ffprobe.exe");
 const integratedGpuDevice = "d3d11va=igpu:,vendor_id=0x1002";
 const decoderLabels = { cuda: "NVIDIA", cpu: "CPU", d3d11va: "AMD 核显" };
+let requestedMonth;
+const inRequestedMonth = frame => !requestedMonth || imageInfo(frame.outputPath)?.month === requestedMonth;
+
+export function parseScreenshotArgs(argv) {
+  const options = {};
+  for (let i=0;i<argv.length;i++) {if(argv[i]==="--") continue; if(argv[i]==="--month") {const month=argv[++i];if(!/^\d{4}(0[1-9]|1[0-2])$/.test(month ?? "")) throw new Error("--month 必须为 YYYYMM");options.month=month;} else if(argv[i]==="--yes") options.yes=true; else if(argv[i]==="--help"||argv[i]==="-h") options.help=true;else throw new Error("未知截图参数: "+argv[i]);}
+  return options;
+}
+
 const workerPrefixes = { cuda: "nvidia", cpu: "cpu", d3d11va: "amd" };
 
 function formatWorkerStats(worker) {
@@ -125,7 +136,7 @@ export function getScreenshotPlan(filePath, duration, interval, outputDir) {
   const baseName = path.basename(filePath, path.extname(filePath));
   return Array.from({ length: Math.ceil(duration / interval) }, (_, index) => ({
     index,
-    outputPath: path.join(outputDir, `${baseName}_${String(index).padStart(4, "0")}_step_by_${interval}s.jpg`),
+    outputPath: requestedMonth ? calendarImagePath(Const.OutputImgDir, `${baseName}_${String(index).padStart(4, "0")}_step_by_${interval}s.jpg`) : path.join(outputDir, `${baseName}_${String(index).padStart(4, "0")}_step_by_${interval}s.jpg`),
     tempName: `${String(index).padStart(8, "0")}.jpg`,
   }));
 }
@@ -146,7 +157,7 @@ async function isValidImage(filePath) {
   }
 }
 
-export function buildExtractionArgs(filePath, tempDir, interval, frameCount, backend = "cuda") {
+export function buildExtractionArgs(filePath, tempDir, interval, frameCount, backend = "cuda", selectedIndices) {
   let decoderArgs;
   switch (backend) {
     case "cuda":
@@ -167,6 +178,15 @@ export function buildExtractionArgs(filePath, tempDir, interval, frameCount, bac
       throw new Error(`未知解码通道: ${backend}`);
   }
   const downloadFilter = backend === "cpu" ? "" : "hwdownload,";
+  let selectedFilter = "";
+  if (selectedIndices) {
+    const ranges=[];
+    for (const index of selectedIndices) {
+      const last=ranges.at(-1);
+      if(last && index===last[1]+1) last[1]=index;else ranges.push([index,index]);
+    }
+    selectedFilter = "select='" + ranges.map(([a,b])=>a===b?'eq(n,'+a+')':'between(n,'+a+','+b+')').join('+') + "',";
+  }
   return [
     "-hide_banner", "-loglevel", "verbose", "-nostdin", "-nostats", "-y",
     "-progress", "pipe:1", "-stats_period", String(Const.FfmpegProgressIntervalSeconds),
@@ -175,7 +195,7 @@ export function buildExtractionArgs(filePath, tempDir, interval, frameCount, bac
     "-filter_threads", "1",
     // 按相对 0、N、2N 秒取帧，选择该时刻或紧邻之前的帧，保留不足一个间隔的末段。
     // 硬件通道先筛选再回传；CPU 通道无需显存传输，其他取帧/编码参数完全一致。
-    "-vf", `setpts=PTS-STARTPTS,fps=fps=1/${interval}:start_time=0:round=up:eof_action=pass,${downloadFilter}format=nv12`,
+    "-vf", `setpts=PTS-STARTPTS,fps=fps=1/${interval}:start_time=0:round=up:eof_action=pass,${selectedFilter}${downloadFilter}format=nv12`,
     "-fps_mode", "passthrough", "-frames:v", String(frameCount),
     "-c:v", "mjpeg", "-q:v", "2", "-threads:v", "1",
     "-start_number", "0", "-f", "image2", path.join(tempDir, "%08d.jpg"),
@@ -208,15 +228,16 @@ async function extractFile(filePath, signal, backend, taskManifest, worker, imag
   const videoTask = taskManifest.getVideo(filePath);
   const duration = videoTask.duration;
   const plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, videoImageDirectory(filePath, videoTask));
-  const missing = plan.filter(frame => !videoTask.frames[frame.index]);
-  Object.assign(worker, {duration, expectedFrames: plan.length});
+  const missing = plan.filter(frame => !videoTask.frames[frame.index] && !videoTask.excluded?.[frame.index] && inRequestedMonth(frame));
+  missing.forEach((frame, position) => {frame.tempName = `${String(position).padStart(8, "0")}.jpg`;});
+  Object.assign(worker, {duration, expectedFrames: missing.length});
   if (!missing.length) {
     logger.log(`⏭ [${label}] ${fileName}: ${plan.length} 张图片全部命中缓存，跳过视频`);
     return {skipped: true};
   }
   logger.log(`▶ [${label}] ${fileName}: 时长 ${duration} 秒，预计 ${plan.length} 张，缓存 ${plan.length - missing.length} 张，单进程补齐 ${missing.length} 张`);
   const tempDir = await fs.mkdtemp(path.join(Const.OutputImgDir, ".frames-"));
-  const args = buildExtractionArgs(filePath, tempDir, Const.ScreenshotIntervalSeconds, plan.length, backend);
+  const args = buildExtractionArgs(filePath, tempDir, Const.ScreenshotIntervalSeconds, missing.length, backend, missing.map(frame => frame.index));
   let ffmpegResult;
   let handedOff = false;
   try {
@@ -251,7 +272,7 @@ async function extractFile(filePath, signal, backend, taskManifest, worker, imag
         ffmpegResult = details;
         worker.stats.ffmpegSeconds += details.elapsedSeconds;
         worker.pid = undefined;
-        logger.log(`FFmpeg 退出 [${worker.id}] PID ${details.pid ?? "未知"}，code=${details.code}，signal=${details.signal || "无"}，耗时 ${details.elapsedSeconds.toFixed(1)} 秒，报告输出 ${worker.progress?.frame ?? "未知"}/${plan.length} 张，硬件帧证据=${backend === "cpu" ? "软件解码" : worker.hardwareConfirmed ? "已确认" : "未捕获"}`);
+        logger.log(`FFmpeg 退出 [${worker.id}] PID ${details.pid ?? "未知"}，code=${details.code}，signal=${details.signal || "无"}，耗时 ${details.elapsedSeconds.toFixed(1)} 秒，报告输出 ${worker.progress?.frame ?? "未知"}/${missing.length} 张，硬件帧证据=${backend === "cpu" ? "软件解码" : worker.hardwareConfirmed ? "已确认" : "未捕获"}`);
       },
     });
     // 保存独立快照：原截图 worker 入队后会立即处理其他视频。
@@ -306,7 +327,7 @@ async function organizeImages(job, signal, worker) {
       logger.log(`▶ [图片整理 | ${worker.id}] ${fileName}，来源 ${sourceWorkerId}，待补 ${missing.length} 张`);
       const tempFiles = await fs.readdir(tempDir);
       worker.actualFrames = tempFiles.filter(name => /^\d+\.jpg$/i.test(name)).length;
-      logger.log(`输出检查 [${worker.id}，来源 ${sourceWorkerId}]: 预计 ${plan.length} 张，实际生成 ${worker.actualFrames} 张，本次待补 ${missing.length} 张`);
+      logger.log(`输出检查 [${worker.id}，来源 ${sourceWorkerId}]: 计划 ${plan.length} 张，本次待补 ${missing.length} 张，实际生成 ${worker.actualFrames} 张`);
       for (const frame of missing) {
         signal.throwIfAborted();
         if (!await isValidImage(path.join(tempDir, frame.tempName))) {
@@ -316,9 +337,9 @@ async function organizeImages(job, signal, worker) {
       }
       setWorkerPhase(worker, "publish", {checkedFrames: 0});
       job.taskManifest.setPhase(filePath, "moving", {worker: worker.id});
-      const targetDir = path.dirname(plan[0].outputPath);
+      const targetDir = path.dirname(missing[0].outputPath);
       let wholeDirectory = false;
-      if (targetDir !== Const.OutputImgDir && missing.length === plan.length) {
+      if (!requestedMonth && targetDir !== Const.OutputImgDir && missing.length === plan.length) {
         try {await fs.stat(targetDir);} catch (error) {
           if (error.code !== "ENOENT") throw error;
           wholeDirectory = true;
@@ -343,7 +364,10 @@ async function organizeImages(job, signal, worker) {
         worker.stats.imagesWritten = (worker.stats.imagesWritten ?? 0) + written;
       } else {
         await fs.mkdir(targetDir, {recursive: true});
+        const targetDirectories = new Set([targetDir]);
         for (const frame of missing) {
+          const frameDir=path.dirname(frame.outputPath);
+          if(!targetDirectories.has(frameDir)){await fs.mkdir(frameDir,{recursive:true});targetDirectories.add(frameDir);}
           signal.throwIfAborted();
           const checkStartedAt = performance.now();
           let valid;
@@ -366,7 +390,7 @@ async function organizeImages(job, signal, worker) {
       try {await fs.rm(tempDir, {recursive: true, force: true});}
       finally {setWorkerPhase(worker, "idle");}
     }
-    job.taskManifest.setPhase(filePath, "completed", {worker: worker.id});
+    job.taskManifest.setPhase(filePath, plan.every(frame => job.taskManifest.getVideo(filePath).frames[frame.index] || job.taskManifest.getVideo(filePath).excluded?.[frame.index]) ? "completed" : "month_completed", {worker: worker.id});
     worker.stats.moved++;
     logger.log(`✅ [图片整理 | ${worker.id}，来源 ${sourceWorkerId}] ${fileName}: 新增 ${written} 张，缓存保留 ${plan.length - written} 张`);
     return {written};
@@ -483,17 +507,21 @@ async function prepareScreenshotTasks(files, durationCache, taskManifest, signal
       setWorkerPhase(worker, "probe");
       taskManifest.setPhase(filePath, "probing", {worker: worker.id});
       const duration = await durationCache.getDuration(filePath, videoPath => getVideoDuration(videoPath, signal, worker));
-      taskManifest.prepareVideo(filePath, duration);
+      taskManifest.prepareVideo(filePath, duration, {preserveFrames: Boolean(requestedMonth)});
       const videoTask = taskManifest.getVideo(filePath);
       let plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, videoImageDirectory(filePath, videoTask));
       setWorkerPhase(worker, "cachecheck", {expectedFrames: plan.length, checkTotal: plan.length});
       taskManifest.setPhase(filePath, "checking", {worker: worker.id});
       for (const frame of plan) {
         signal.throwIfAborted();
-        if (await isValidImage(frame.outputPath)) taskManifest.markFrameComplete(filePath, frame.index);
+        if (!inRequestedMonth(frame)) continue;
+        if (requestedMonth) taskManifest.markFramePending(filePath, frame.index);
+        if (videoTask.excluded?.[frame.index]) {worker.checkedFrames++; continue;}
+        const calendarPath = calendarImagePath(Const.OutputImgDir, path.basename(frame.outputPath));
+        if (await isValidImage(calendarPath) || await isValidImage(frame.outputPath)) taskManifest.markFrameComplete(filePath, frame.index);
         worker.checkedFrames++;
       }
-      if (Const.ImageOutputByVideo && videoTask.imageLayout !== "video-directory" && videoTask.doneCount === 0) {
+      if (!requestedMonth && Const.ImageOutputByVideo && videoTask.imageLayout !== "video-directory" && videoTask.doneCount === 0) {
         videoTask.imageLayout = "video-directory";
         plan = getScreenshotPlan(filePath, duration, Const.ScreenshotIntervalSeconds, videoImageDirectory(filePath, videoTask));
         for (const frame of plan) {
@@ -501,9 +529,9 @@ async function prepareScreenshotTasks(files, durationCache, taskManifest, signal
           if (await isValidImage(frame.outputPath)) taskManifest.markFrameComplete(filePath, frame.index);
         }
       }
-      if (videoTask.frames.every(Boolean)) {
+      if (plan.every(frame => !inRequestedMonth(frame) || videoTask.frames[frame.index] || videoTask.excluded?.[frame.index])) {
         worker.stats.skipped++;
-        taskManifest.setPhase(filePath, "completed", {worker: worker.id});
+        taskManifest.setPhase(filePath, videoTask.frames.every((done,index)=>done || videoTask.excluded?.[index]) ? "completed" : "month_completed", {worker: worker.id});
         logger.log(`⏭ [${worker.id}] ${path.basename(filePath)}: ${plan.length} 张图片全部命中缓存，任务已完成`);
         onTerminal("completed");
       } else {
@@ -535,11 +563,15 @@ async function prepareScreenshotTasks(files, durationCache, taskManifest, signal
 }
 
 async function main() {
+  const options = parseScreenshotArgs(process.argv.slice(2));
+  if (options.help) {console.log("pnpm m1 --month YYYYMM：只生成该月图片，直接写入 output/YYYY/MM/MMDD，并按文件非空判断缓存；不指定月份保留原全量模式。");return;}
+  requestedMonth = options.month;
   const startAt = dayjs().unix();
   let durationCache;
   let taskManifest;
   let heartbeat;
   let imagePool;
+  let releaseTaskLock;
   const runId = `${dayjs().format("YYYYMMDD-HHmmss")}-${process.pid}`;
   const workerStats = new Map();
   const controller = new AbortController();
@@ -552,6 +584,7 @@ async function main() {
   let claimed = 0;
   let failed = 0;
   try {
+    releaseTaskLock = await acquireTaskLock(Const.ScreenshotTaskManifestPath);
     Const.validateScreenshotInterval();
     Const.validateVideoConcurrency();
     Const.validateWorkerDiagnostics();
@@ -564,11 +597,12 @@ async function main() {
     });
     logger.log(`视频时长缓存: ${durationCache.path}，已载入 ${durationCache.stats.entries} 条，ignore 标记 ${durationCache.stats.ignoredEntries} 条`);
     const mp4Files = allMp4Files.filter(filePath => {
+      if (requestedMonth) {const match=path.basename(filePath).match(/^(\d{14})_(\d{14})\.mp4$/i);if (!match || match[1].slice(0,6)>requestedMonth || dayjs(match[2], "YYYYMMDDHHmmss").add(Const.ScreenshotIntervalSeconds, "second").format("YYYYMM")<requestedMonth) return false;}
       if (!durationCache.isIgnored(filePath)) return true;
       logger.log(`⏭ [ignore] ${filePath}: 已配置忽略，跳过视频`);
       return false;
     });
-    const ignoredCount = allMp4Files.length - mp4Files.length;
+    const ignoredCount = allMp4Files.filter(file => durationCache.isIgnored(file)).length;
     taskManifest = await ScreenshotTaskManifest.open(Const.ScreenshotTaskManifestPath, {
       intervalSeconds: Const.ScreenshotIntervalSeconds, outputDir: Const.OutputImgDir,
       flushIntervalMs: Const.TaskManifestFlushIntervalSeconds * 1000,
@@ -578,7 +612,7 @@ async function main() {
         catch (error) {logger.warn(`HTML 进度保存失败: ${error.message}`);}
       },
     });
-    taskManifest.startRun(allMp4Files, {runId, ignoredUris: allMp4Files.filter(file => durationCache.isIgnored(file))});
+    taskManifest.startRun(allMp4Files, {runId, activeUris: requestedMonth ? mp4Files : undefined, verifyFiles: Boolean(requestedMonth), ignoredUris: allMp4Files.filter(file => durationCache.isIgnored(file))});
     taskManifest.setRunState("planning");
     await taskManifest.flush();
     logger.log(`整体任务 JSON: ${Const.ScreenshotTaskManifestPath}`);
@@ -598,7 +632,7 @@ async function main() {
       logger.log(mp4Files.length ? "所有视频任务 completed=true，本次直接跳过，无需检查图片" : allMp4Files.length ? "所有视频均已配置忽略，本次无需提取" : `在 ${Const.InputVideoDir} 及其子目录中未找到任何 .mp4 文件`);
       return;
     }
-    await Const.asyncConfirmIt(
+    if (!options.yes) await Const.asyncConfirmIt(
       `本次待规划 ${planningFiles.length} 条视频，任务 JSON 已完成跳过 ${alreadyCompleted.length} 条，每 ${Const.ScreenshotIntervalSeconds} 秒一张；截图 worker NVIDIA ${Const.VideoConcurrency} / CPU ${Const.CpuVideoConcurrency} / AMD 核显 ${Const.IntegratedGpuConcurrency}，CPU 每进程 ${Const.CpuDecodeThreads} 个解码线程；图片整理 worker ${Const.ImageMoveConcurrency}，最多排队 ${Const.ImageMoveQueueCapacity} 条视频`,
     );
     controller.signal.throwIfAborted();
@@ -739,6 +773,7 @@ async function main() {
       try {await taskManifest.close();}
       catch (error) {logger.error(`任务 JSON 保存失败: ${error.message}`); process.exitCode ||= 1;}
     }
+    await releaseTaskLock?.();
     process.removeListener("SIGINT", onInterrupt);
     process.removeListener("SIGTERM", onTerminate);
     logger.log(`执行完毕，总耗时 ${dayjs().unix() - startAt} 秒`);
