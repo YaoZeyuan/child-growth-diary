@@ -16,7 +16,8 @@
     "download-person-model": "node ./src/download-person-model.js",
     "detect-person": "node ./src/detect-person.js",
     "test:detection": "node --test test/detection-cache.test.js test/person-detector.test.js test/detection-report.test.js test/person-image-list.test.js",
-    "month": "node ./src/month-pipeline.js"
+    "month": "node ./src/month-pipeline.js",
+    "flatten-images": "node ./src/flatten-video-images.js"
   },
   "keywords": [],
   "author": "",

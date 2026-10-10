@@ -9,7 +9,7 @@ export function imageInfo(file) {
  const start=dayjs(match[1], 'YYYYMMDDHHmmss',true), index=Number(match[3]), interval=Number(match[4]);
  if(!start.isValid() || !Number.isSafeInteger(index) || !Number.isSafeInteger(interval) || interval<=0)return null;
  const time=start.add(index*interval,'second');
- return {name,stem:match[1]+'_'+match[2],index,interval,month:time.format('YYYYMM'),timeAt:time.unix(),directory:time.format('YYYY/MM/MMDD')};
+ return {name,stem:match[1]+'_'+match[2],index,interval,month:time.format('YYYYMM'),startMonth:start.format('YYYYMM'),timeAt:time.unix(),directory:start.format('YYYY/MM/MMDD')};
 }
 export function calendarImagePath(root, filename) {
  const info=imageInfo(filename);

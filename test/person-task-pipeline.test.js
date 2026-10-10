@@ -21,10 +21,10 @@ test('unknown and failed results stop extension and never count as negative evid
  const values=[true,null,...Array(10).fill(false),null,false,true,true,true];
  assert.deepEqual(findAbsentIntervals(values),[{start:2,end:11}]);
 });
-test('calendar directory uses actual timestamp with cross-month and Windows filenames',()=>{
+test('calendar directory uses video start date while retaining actual frame time',()=>{
  const file='C:\\old\\20260630235959_20260701001000_0001_step_by_10s.jpg';
  assert.equal(imageInfo(file).month,'202607');
- assert.equal(calendarImagePath('/output',file),path.join('/output','2026','07','0701',imageInfo(file).name));
+ assert.equal(calendarImagePath('/output',file),path.join('/output','2026','06','0630',imageInfo(file).name));
  assert.ok(compareImageNames('/z/20260101000000_20260101000100_0000_step_by_10s.jpg','/a/20260201000000_20260201000100_0000_step_by_10s.jpg')<0);
 });
 test('unified detection resumes without reinference and intervals span video boundaries',async t=>{
@@ -46,8 +46,8 @@ test('excluded absent images satisfy generation completion without pretending fi
 });
 test('o2 organizes legacy flat and per-video images, is idempotent and never overwrites conflicts',async t=>{
  const f=await fixture(t);await f.manifest.close();const name='20260630235959_20260701001000_0001_step_by_10s.jpg';const old=path.join(f.output,'legacy-video');await fs.mkdir(old);await fs.writeFile(path.join(old,name),'existing');
- const result=await organizeImagesByMonth(f.output,'202607');assert.equal(result.moved,1);assert.equal(await fs.readFile(calendarImagePath(f.output,name),'utf8'),'existing');assert.equal((await organizeImagesByMonth(f.output,'202607')).moved,0);
- await fs.writeFile(path.join(f.output,name),'duplicate');const conflict=await organizeImagesByMonth(f.output,'202607');assert.equal(conflict.conflicts,1);assert.equal(await fs.readFile(calendarImagePath(f.output,name),'utf8'),'existing');assert.equal(await fs.readFile(path.join(f.output,name),'utf8'),'duplicate');
+ const result=await organizeImagesByMonth(f.output,'202606');assert.equal(result.moved,1);assert.equal(await fs.readFile(calendarImagePath(f.output,name),'utf8'),'existing');assert.equal((await organizeImagesByMonth(f.output,'202606')).moved,0);
+ await fs.writeFile(path.join(f.output,name),'duplicate');const conflict=await organizeImagesByMonth(f.output,'202606');assert.equal(conflict.conflicts,1);assert.equal(await fs.readFile(calendarImagePath(f.output,name),'utf8'),'existing');assert.equal(await fs.readFile(path.join(f.output,name),'utf8'),'duplicate');
 });
 
 
@@ -74,9 +74,9 @@ test('videos temporarily moved out of input keep person results in the task mani
 });
 
 
-test('month scanner only reads its calendar directory and accepts cross-month timestamps',async t=>{
+test('month scanner only reads its directory and uses video start month',async t=>{
  const f=await fixture(t);await f.manifest.close();const jan=path.join(f.output,'2026','01','0101'),feb=path.join(f.output,'2026','02','0201');await fs.mkdir(jan,{recursive:true});await fs.mkdir(feb,{recursive:true});
- const name='20251231235959_20260101001000_0001_step_by_10s.jpg';await fs.writeFile(path.join(jan,name),'sample');await fs.writeFile(path.join(feb,'20260201000000_20260201001000_0000_step_by_10s.jpg'),'other');await fs.writeFile(path.join(f.output,'20260101000000_20260101001000_0000_step_by_10s.jpg'),'legacy');
+ const name='20260131235959_20260201001000_0001_step_by_10s.jpg';await fs.writeFile(path.join(jan,name),'sample');await fs.writeFile(path.join(feb,'20260201000000_20260201001000_0000_step_by_10s.jpg'),'other');await fs.writeFile(path.join(f.output,'20260101000000_20260101001000_0000_step_by_10s.jpg'),'legacy');
  const progress=[];const selected=await scanMonthImages(f.output,'202601',10,{onProgress:value=>progress.push(value)});assert.deepEqual(selected,[path.join(jan,name)]);assert.equal(progress.at(-1).scanned,1);assert.equal(progress[0].legacyFallback,false);
 });
 test('month scanner retains old-layout compatibility only if the calendar month folder is missing',async t=>{
@@ -96,4 +96,8 @@ test('interrupt waits for three in-flight sessions, saves their results and resu
  const f=await fixture(t),video=path.join(f.root,'20260101000000_20260101000200.mp4');f.manifest.startRun([video]);f.manifest.prepareVideo(video,12*ScreenshotIntervalSeconds);const files=[];for(let i=0;i<12;i++){const file=path.join(f.output,path.basename(video,'.mp4')+'_'+String(i).padStart(4,'0')+'_step_by_'+ScreenshotIntervalSeconds+'s.jpg');await fs.writeFile(file,'image');files.push(file);}
  const controller=new AbortController();let called=0;const detectors=[0,1,2].map(()=>({modelSha256:'interrupt',detect:async()=>{await new Promise(resolve=>setTimeout(resolve,10));called++;controller.abort();return false;}}));
  const stopped=await runTaskDetection({manifest:f.manifest,detectors,files,month:'202601',signal:controller.signal});assert.equal(called,3);assert.equal(stopped.processed,3);await f.manifest.close();const again=await ScreenshotTaskManifest.open(f.file,f.options);let resumedCalls=0;const resumed=await runTaskDetection({manifest:again,detectors:[0,1,2].map(()=>({modelSha256:'interrupt',detect:async()=>{resumedCalls++;return false;}})),files,month:'202601'});assert.equal(resumed.cached,3);assert.equal(resumedCalls,9);assert.equal(resumed.excluded,12);await again.close();
+});
+
+test('cross-year frames are detected in the video start month and cached on rerun',async t=>{
+ const f=await fixture(t),video=path.join(f.root,'20251231235959_20260101001000.mp4');f.manifest.startRun([video]);f.manifest.prepareVideo(video,2*ScreenshotIntervalSeconds);const dir=path.join(f.output,'2025','12','1231');await fs.mkdir(dir,{recursive:true});const files=[];for(let i=0;i<2;i++){const file=path.join(dir,path.basename(video,'.mp4')+'_'+String(i).padStart(4,'0')+'_step_by_'+ScreenshotIntervalSeconds+'s.jpg');await fs.writeFile(file,'image');files.push(file);}let calls=0;const detector={modelSha256:'cross-year',detect:async()=>{calls++;return true;}};const scanned=await scanMonthImages(f.output,'202512',ScreenshotIntervalSeconds);assert.equal(scanned.length,2);const result=await runTaskDetection({manifest:f.manifest,detector,files:scanned,month:'202512'});assert.equal(result.detected,2);const again=await runTaskDetection({manifest:f.manifest,detector,files:scanned,month:'202512'});assert.equal(again.cached,2);assert.equal(calls,2);await f.manifest.close();
 });

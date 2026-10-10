@@ -23,7 +23,7 @@ const ffprobePath = path.join(ffmpegBinDir, "ffprobe.exe");
 const integratedGpuDevice = "d3d11va=igpu:,vendor_id=0x1002";
 const decoderLabels = { cuda: "NVIDIA", cpu: "CPU", d3d11va: "AMD 核显" };
 let requestedMonth;
-const inRequestedMonth = frame => !requestedMonth || imageInfo(frame.outputPath)?.month === requestedMonth;
+const inRequestedMonth = frame => !requestedMonth || imageInfo(frame.outputPath)?.startMonth === requestedMonth;
 
 export function parseScreenshotArgs(argv) {
   const options = {};

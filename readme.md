@@ -331,3 +331,7 @@ pnpm month --month 202603
 人员检测使用两个进程池：PersonPreprocessConcurrency（默认 3）负责 JPEG 解码、缩放和张量转换；PersonDetectionConcurrency（默认 3）负责模型推理。PersonPreparedQueueCapacity（默认 6）限制正在预处理及等待推理的图片数量，另外每个推理进程最多持有一张。三个配置均在 src/const/index.js。张量通过二进制 IPC 经主进程派发，不写临时图片或张量文件；主进程统一保存结果。日志及 JSON 的 preprocessWorkers 记录预处理进程耗时。修改后重启原检测命令即可，缓存格式与检测规则不变。
 
 合成月份现按视频开始日期（文件名前 6 位）归属，跨午夜/跨月截图仍归视频发起月份。s3 默认 TargetMonth，--month 可覆盖；仅递归扫描 output/YYYY/MM，不扫描其他月份或回退整个 output。--person-json 显式清单也按视频开始月份筛选；实际帧时间仍用于拍摄时间展示。
+
+人员检测 --tasks 的月份筛选与 s3 一致，按视频开始月份识别，跨月/跨年视频在该月份目录内的后续截图也参与检测。
+
+图片目录归属统一按视频开始日期：m1 新图目录和 o2 整理目录使用 YYYY/MM/MMDD 的发起日。o2 --month 按视频开始月份筛选，能从其他旧目录迁回跨月截图；截图实际时间仍通过序号计算用于展示。

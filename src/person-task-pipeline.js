@@ -17,7 +17,7 @@ export async function scanMonthImages(root, month, interval, {signal, onProgress
  const files=[];let scanned=0,lastLog=Date.now();
  for await(const file of walkImages(directory,fs)) {
   signal?.throwIfAborted();scanned++;
-  const info=imageInfo(file);if(info?.month===month&&info.interval===interval)files.push(file);
+  const info=imageInfo(file);if(info?.stem.slice(0,6)===month&&info.interval===interval)files.push(file);
   if(Date.now()-lastLog>=3000){onProgress({directory,legacyFallback,scanned,matched:files.length});lastLog=Date.now();}
  }
  onProgress({directory,legacyFallback,scanned,matched:files.length,complete:true});
@@ -49,7 +49,7 @@ export async function runTaskDetection({manifest,detector,detectors,preprocessor
  const byStem=new Map(Object.entries(manifest.snapshot.videos).filter(([,v])=>v.phase!=='ignored').map(([uri,v])=>[path.basename(v.fileName,path.extname(v.fileName)),uri]));
  const seen=new Set();
  const selected=files.filter(file=>{
-   const info=imageInfo(file);if(!info || info.interval!==Const.ScreenshotIntervalSeconds || info.month!==month || !byStem.has(info.stem))return false;
+   const info=imageInfo(file);if(!info || info.interval!==Const.ScreenshotIntervalSeconds || info.stem.slice(0,6)!==month || !byStem.has(info.stem))return false;
    const key=info.stem+':'+info.index;if(seen.has(key))return false;seen.add(key);return info.index<manifest.getVideo(byStem.get(info.stem)).frames.length;
  }).sort(compareImageNames);
  const pending=[];

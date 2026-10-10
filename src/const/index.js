@@ -51,7 +51,7 @@ export const FfmpegProgressIntervalSeconds = 5; // FFmpeg 内部进度采样间�
 export const NvidiaDiagnosticsEnabled = true; // 只读查询 NVIDIA 解码率/显存
 
 // 图片、备份视频整理月份（YYYYMM）。
-export const TargetMonth = "202602";
+export const TargetMonth = "202604";
 
 export const PersonDetectionConcurrency = 3; // 独立推理进程数
 export const PersonPreprocessConcurrency = 6; // 独立预处理进程数

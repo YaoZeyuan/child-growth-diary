@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {personImageIssue} from '../src/screenshot-2-video.js';
+test('composition distinguishes stale frames, missing tasks and unknown person results',()=>{const task={frames:[true,true],person:[true,null]};assert.equal(personImageIssue(task,0),null);assert.equal(personImageIssue(task,1),'unknown_person');assert.equal(personImageIssue(task,2),'out_of_range');assert.equal(personImageIssue(undefined,0),'missing_task');assert.equal(personImageIssue({...task,phase:'ignored'},0),'ignored_video');});

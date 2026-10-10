@@ -27,6 +27,14 @@ export function screenshotMonth(start, index, interval) {
   return dayjs(start, "YYYYMMDDHHmmss", true).format("YYYYMM");
 }
 
+export function personImageIssue(task,index) {
+  if(!task)return 'missing_task';
+  if(index>=task.frames.length)return 'out_of_range';
+  if(task.phase==='ignored')return 'ignored_video';
+  if(typeof task.person?.[index]!=='boolean')return 'unknown_person';
+  return null;
+}
+
 export function parseVideoArgs(argv) {
   const options = { personJson: null, dryRun: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
@@ -174,7 +182,9 @@ export async function main(argv = process.argv.slice(2)) {
     if (personTasks.screenshotIntervalSeconds !== Const.ScreenshotIntervalSeconds || !personTasks.personPolicy || personTasks.personPolicy.confidence !== Const.PersonConfidence || personTasks.personPolicy.absentRun !== Const.PersonAbsentRun || personTasks.personPolicy.presentRun !== Const.PersonPresentRun) throw new Error("请先用 detect-person --tasks 检测当前截图间隔");
   }
   const personByStem = new Map(Object.values(personTasks?.videos ?? {}).map(video => [path.basename(video.fileName, path.extname(video.fileName)), video]));
-  let personExcluded = 0, unknownPerson = 0;
+  let personExcluded = 0, unknownPerson = 0, staleImages = 0;
+  const issueCounts={}, issues=[];
+  const issueLabels={missing_task:'缺少视频任务记录',out_of_range:'旧图片序号超出当前任务范围',ignored_video:'视频已配置忽略',unknown_person:'人员结果未检测或检测失败'};
   // 解析文件名，转换为时间戳
   let imageFileList = [];
   for (const item of rawImageFileList) {
@@ -203,7 +213,14 @@ export async function main(argv = process.argv.slice(2)) {
     if (screenshotMonth(startTimeStr, fileCount, intervalSeconds) !== month) continue;
     if (filterPerson) {
       const info = imageInfo(item), task = personByStem.get(info.stem);
-      if (typeof task?.person?.[info.index] !== "boolean") {unknownPerson++; continue;}
+      const reason=personImageIssue(task,info.index);
+      if(reason){
+        issueCounts[reason]=(issueCounts[reason]??0)+1;
+        const detail={reason:issueLabels[reason],file:item,index:info.index,expectedFrames:task?.frames.length,video:task?.fileName};
+        issues.push(detail);
+        if(reason==='out_of_range'||reason==='ignored_video'){staleImages++;continue;}
+        unknownPerson++;continue;
+      }
       if (task.person[info.index] !== true || task.excluded?.[info.index]) {personExcluded++; continue;}
     }
     const fileDayStr = dayjs.unix(fileTimeAt).format("YYYY-MM-DD");
@@ -217,7 +234,17 @@ export async function main(argv = process.argv.slice(2)) {
     });
   }
 
-  if (unknownPerson && !options.dryRun) throw new Error("该月仍有未检测或检测失败图片，请先完成 --tasks 检测后再合成");
+  if(issues.length){
+    logger.warn('人员筛选异常统计: '+JSON.stringify(issueCounts)+'；已跳过越界/忽略图片 '+staleImages+' 张');
+    for(const issue of issues.slice(0,20))logger.warn(issue.reason+': '+issue.file+'；序号 '+issue.index+'，任务预计 '+(issue.expectedFrames??'无记录')+' 张');
+    if(issues.length>20)logger.warn('另有 '+(issues.length-20)+' 条，详见诊断文件');
+    if(!options.dryRun){
+      const report=path.join(Base_Dir,'log','composition-issues-'+suffix+'.json');
+      fs.mkdirSync(path.dirname(report),{recursive:true});fs.writeFileSync(report,JSON.stringify({month,issueCounts,skipped:staleImages,blocking:unknownPerson,issues},null,2));
+      logger.warn('完整诊断: '+report);
+    }
+  }
+  if (unknownPerson && !options.dryRun) throw new Error(month+' 月有 '+unknownPerson+' 张图片缺少有效人员结果。缺少任务记录请先执行 pnpm m1 --month '+month+'；未检测/失败请执行 pnpm detect-person --tasks --month '+month+'。具体路径见上述日志及诊断 JSON。');
 
   if (imageFileList.length === 0) {
     const source = options.personJson
